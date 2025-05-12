@@ -632,6 +632,7 @@ async fn test_ping_multi_node() -> TestResult {
         }
 
         Ok::<_, anyhow::Error>(())
+            }
     })
     .instrument(span!(Level::INFO, "test_ping_multi_node"));
 
