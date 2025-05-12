@@ -446,11 +446,12 @@ async fn test_ping_multi_node() -> TestResult {
             };
 
         // Function to get the current states from all nodes
-        let get_all_states = async |client_gw: &mut WebApi,
-                                    client_node1: &mut WebApi,
-                                    client_node2: &mut WebApi,
-                                    key: ContractKey|
-               -> anyhow::Result<(Ping, Ping, Ping)> {
+        let get_all_states = |client_gw: &mut WebApi,
+                              client_node1: &mut WebApi,
+                              client_node2: &mut WebApi,
+                              key: ContractKey|
+               -> impl Future<Output = anyhow::Result<(Ping, Ping, Ping)>> {
+            async move {
             // Request the contract state from all nodes
             tracing::info!("Querying all nodes for current state...");
 
@@ -1021,6 +1022,514 @@ async fn test_ping_application_loop() -> TestResult {
         Ok::<_, anyhow::Error>(())
     })
     .instrument(span!(Level::INFO, "test_ping_application_loop"));
+
+    // Wait for test completion or node failures
+    select! {
+        gw = gateway_node => {
+            let Err(gw) = gw;
+            return Err(anyhow!("Gateway node failed: {}", gw).into());
+        }
+        n1 = node1 => {
+            let Err(n1) = n1;
+            return Err(anyhow!("Node 1 failed: {}", n1).into());
+        }
+        n2 = node2 => {
+            let Err(n2) = n2;
+            return Err(anyhow!("Node 2 failed: {}", n2).into());
+        }
+        r = test => {
+            r??;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_ping_blocked_peers() -> TestResult {
+    freenet::config::set_logger(Some(LevelFilter::DEBUG), None);
+
+    // Setup network sockets for the gateway
+    let network_socket_gw = TcpListener::bind("127.0.0.1:0")?;
+
+    // Setup API sockets for all three nodes
+    let ws_api_port_socket_gw = TcpListener::bind("127.0.0.1:0")?;
+    let ws_api_port_socket_node1 = TcpListener::bind("127.0.0.1:0")?;
+    let ws_api_port_socket_node2 = TcpListener::bind("127.0.0.1:0")?;
+
+    // Configure gateway node
+    let (config_gw, preset_cfg_gw, config_gw_info) = {
+        let (cfg, preset) = base_node_test_config(
+            true,
+            vec![],
+            Some(network_socket_gw.local_addr()?.port()),
+            ws_api_port_socket_gw.local_addr()?.port(),
+            None, // No blocked addresses for gateway
+        )
+        .await?;
+        let public_port = cfg.network_api.public_port.unwrap();
+        let path = preset.temp_dir.path().to_path_buf();
+        (cfg, preset, gw_config(public_port, &path)?)
+    };
+    let ws_api_port_gw = config_gw.ws_api.ws_api_port.unwrap();
+    let gw_address = format!("127.0.0.1:{}", config_gw.network_api.public_port.unwrap());
+    tracing::info!("Gateway address: {}", gw_address);
+
+    let node2_port = ws_api_port_socket_node2.local_addr()?.port();
+    let node2_address = format!("127.0.0.1:{}", node2_port);
+    let node2_socket_addr: std::net::SocketAddr = node2_address.parse()?;
+    tracing::info!("Node2 address to block in node1: {}", node2_socket_addr);
+
+    let node1_port = ws_api_port_socket_node1.local_addr()?.port();
+    let node1_address = format!("127.0.0.1:{}", node1_port);
+    let node1_socket_addr: std::net::SocketAddr = node1_address.parse()?;
+    tracing::info!("Node1 address to block in node2: {}", node1_socket_addr);
+
+    // Configure client node 1 - block node2
+    let (config_node1, preset_cfg_node1) = base_node_test_config(
+        false,
+        vec![serde_json::to_string(&config_gw_info)?],
+        None,
+        ws_api_port_socket_node1.local_addr()?.port(),
+        Some(vec![node2_socket_addr]), // Block node2
+    )
+    .await?;
+    let ws_api_port_node1 = config_node1.ws_api.ws_api_port.unwrap();
+
+    // Configure client node 2 - block node1
+    let (config_node2, preset_cfg_node2) = base_node_test_config(
+        false,
+        vec![serde_json::to_string(&config_gw_info)?],
+        None,
+        ws_api_port_socket_node2.local_addr()?.port(),
+        Some(vec![node1_socket_addr]), // Block node1
+    )
+    .await?;
+    let ws_api_port_node2 = config_node2.ws_api.ws_api_port.unwrap();
+
+    // Log data directories for debugging
+    tracing::info!("Gateway node data dir: {:?}", preset_cfg_gw.temp_dir.path());
+    tracing::info!("Node 1 data dir: {:?}", preset_cfg_node1.temp_dir.path());
+    tracing::info!("Node 2 data dir: {:?}", preset_cfg_node2.temp_dir.path());
+
+    // Free ports so they don't fail on initialization
+    std::mem::drop(network_socket_gw);
+    std::mem::drop(ws_api_port_socket_gw);
+    std::mem::drop(ws_api_port_socket_node1);
+    std::mem::drop(ws_api_port_socket_node2);
+
+    // Start gateway node
+    let gateway_node = async {
+        let config = config_gw.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    // Start client node 1
+    let node1 = async move {
+        let config = config_node1.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    // Start client node 2
+    let node2 = async {
+        let config = config_node2.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    // Main test logic
+    let test = tokio::time::timeout(Duration::from_secs(120), async {
+        // Wait for nodes to start up
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Connect to all three nodes
+        let uri_gw = format!(
+            "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+            ws_api_port_gw
+        );
+        let uri_node1 = format!(
+            "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+            ws_api_port_node1
+        );
+        let uri_node2 = format!(
+            "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+            ws_api_port_node2
+        );
+
+        let (stream_gw, _) = connect_async(&uri_gw).await?;
+        let (stream_node1, _) = connect_async(&uri_node1).await?;
+        let (stream_node2, _) = connect_async(&uri_node2).await?;
+
+        let mut client_gw = WebApi::start(stream_gw);
+        let mut client_node1 = WebApi::start(stream_node1);
+        let mut client_node2 = WebApi::start(stream_node2);
+
+        // FIXME: this is error prone, rebuild the contract each time there are changes in the code
+        // (add a build.rs script to the contracts/ping crate)
+        let path_to_code = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
+        tracing::info!(path=%path_to_code.display(), "loading contract code");
+        let code = std::fs::read(path_to_code)
+            .ok()
+            .ok_or_else(|| anyhow!("Failed to read contract code"))?;
+        let code_hash = CodeHash::from_code(&code);
+        tracing::info!(code_hash=%code_hash, "loaded contract code");
+
+        // Load the ping contract
+        let ping_options = PingContractOptions {
+            frequency: Duration::from_secs(5),
+            ttl: Duration::from_secs(30),
+            tag: APP_TAG.to_string(),
+            code_key: code_hash.to_string(),
+        };
+        let params = Parameters::from(serde_json::to_vec(&ping_options).unwrap());
+        let container = ContractContainer::try_from((code, &params))?;
+        let contract_key = container.key();
+
+        // Step 1: Gateway node puts the contract
+        tracing::info!("Gateway node putting contract...");
+        let wrapped_state = {
+            let ping = Ping::default();
+            let serialized = serde_json::to_vec(&ping)?;
+            WrappedState::new(serialized)
+        };
+
+        client_gw
+            .send(ClientRequest::ContractOp(ContractRequest::Put {
+                contract: container.clone(),
+                state: wrapped_state.clone(),
+                related_contracts: RelatedContracts::new(),
+                subscribe: false,
+            }))
+            .await?;
+
+        // Wait for put response on gateway
+        let key = wait_for_put_response(&mut client_gw, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!(key=%key, "Gateway: put ping contract successfully!");
+
+        // Step 2: Node 1 gets the contract
+        tracing::info!("Node 1 getting contract...");
+        client_node1
+            .send(ClientRequest::ContractOp(ContractRequest::Get {
+                key: contract_key,
+                return_contract_code: true,
+                subscribe: false,
+            }))
+            .await?;
+
+        // Wait for get response on node 1
+        let node1_state = wait_for_get_response(&mut client_node1, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!("Node 1: got contract with {} entries", node1_state.len());
+
+        // Step 3: Node 2 gets the contract
+        tracing::info!("Node 2 getting contract...");
+        client_node2
+            .send(ClientRequest::ContractOp(ContractRequest::Get {
+                key: contract_key,
+                return_contract_code: true,
+                subscribe: false,
+            }))
+            .await?;
+
+        // Wait for get response on node 2
+        let node2_state = wait_for_get_response(&mut client_node2, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!("Node 2: got contract with {} entries", node2_state.len());
+
+        // Step 4: All nodes subscribe to the contract
+        tracing::info!("All nodes subscribing to contract...");
+
+        // Gateway subscribes
+        client_gw
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: contract_key,
+                summary: None,
+            }))
+            .await?;
+        wait_for_subscribe_response(&mut client_gw, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!("Gateway: subscribed successfully!");
+
+        // Node 1 subscribes
+        client_node1
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: contract_key,
+                summary: None,
+            }))
+            .await?;
+        wait_for_subscribe_response(&mut client_node1, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!("Node 1: subscribed successfully!");
+
+        // Node 2 subscribes
+        client_node2
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
+                key: contract_key,
+                summary: None,
+            }))
+            .await?;
+        wait_for_subscribe_response(&mut client_node2, &contract_key)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tracing::info!("Node 2: subscribed successfully!");
+
+        // Step 5: All nodes send updates and verify they receive updates from others
+
+        // Setup local state trackers for each node
+        let mut gw_local_state = Ping::default();
+        let mut node1_local_state = Ping::default();
+        let mut node2_local_state = Ping::default();
+
+        // Create different tags for each node
+        let gw_tag = "ping-from-gw-blocked".to_string();
+        let node1_tag = "ping-from-node1-blocked".to_string();
+        let node2_tag = "ping-from-node2-blocked".to_string();
+
+        // Track which nodes have seen updates from each other
+        let mut gw_seen_node1 = false;
+        let mut gw_seen_node2 = false;
+        let mut node1_seen_gw = false;
+        let mut node1_seen_node2 = false;
+        let mut node2_seen_gw = false;
+        let mut node2_seen_node1 = false;
+
+        // Function to verify if all nodes have all the expected tags
+        let verify_all_tags_present =
+            |gw: &Ping, node1: &Ping, node2: &Ping, tags: &[String]| -> bool {
+                for tag in tags {
+                    if !gw.contains_key(tag) || !node1.contains_key(tag) || !node2.contains_key(tag)
+                    {
+                        return false;
+                    }
+                }
+                true
+            };
+
+        // Function to get the current states from all nodes
+        let get_all_states = |client_gw: &mut WebApi,
+                              client_node1: &mut WebApi,
+                              client_node2: &mut WebApi,
+                              key: ContractKey|
+               -> impl Future<Output = anyhow::Result<(Ping, Ping, Ping)>> {
+            async move {
+            // Request the contract state from all nodes
+            tracing::info!("Querying all nodes for current state...");
+
+            client_gw
+                .send(ClientRequest::ContractOp(ContractRequest::Get {
+                    key,
+                    return_contract_code: false,
+                    subscribe: false,
+                }))
+                .await?;
+
+            client_node1
+                .send(ClientRequest::ContractOp(ContractRequest::Get {
+                    key,
+                    return_contract_code: false,
+                    subscribe: false,
+                }))
+                .await?;
+
+            client_node2
+                .send(ClientRequest::ContractOp(ContractRequest::Get {
+                    key,
+                    return_contract_code: false,
+                    subscribe: false,
+                }))
+                .await?;
+
+            // Receive and deserialize the states from all nodes
+            let state_gw = wait_for_get_response(client_gw, &key)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            let state_node1 = wait_for_get_response(client_node1, &key)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            let state_node2 = wait_for_get_response(client_node2, &key)
+                .await
+                .map_err(anyhow::Error::msg)?;
+
+            let gw_ping = if state_gw.is_empty() {
+                Ping::default()
+            } else {
+                serde_json::from_slice::<Ping>(&state_gw)?
+            };
+
+            let node1_ping = if state_node1.is_empty() {
+                Ping::default()
+            } else {
+                serde_json::from_slice::<Ping>(&state_node1)?
+            };
+
+            let node2_ping = if state_node2.is_empty() {
+                Ping::default()
+            } else {
+                serde_json::from_slice::<Ping>(&state_node2)?
+            };
+
+            // Log the timestamps for debugging
+            tracing::info!("Gateway state: {:?}", gw_ping);
+            tracing::info!("Node 1 state: {:?}", node1_ping);
+            tracing::info!("Node 2 state: {:?}", node2_ping);
+
+            let gw_time = gw_ping.get(&gw_tag).cloned();
+            let node1_time = node1_ping.get(&node1_tag).cloned();
+            let node2_time = node2_ping.get(&node2_tag).cloned();
+
+            // Log timestamps for debugging
+            tracing::info!("Gateway timestamp: {:?}", gw_time);
+            tracing::info!("Node 1 timestamp: {:?}", node1_time);
+            tracing::info!("Node 2 timestamp: {:?}", node2_time);
+
+            // Check if timestamps match across nodes
+            let timestamps_match = gw_time == node1_time && node1_time == node2_time;
+            if timestamps_match {
+                tracing::info!("All nodes have matching timestamps!");
+            } else {
+                tracing::warn!("Nodes have different timestamps!");
+            }
+
+            // Check if all states have the same content
+            let all_states_match = gw_ping == node1_ping && node1_ping == node2_ping;
+            if all_states_match {
+                tracing::info!("All nodes have matching state content!");
+            } else {
+                tracing::warn!("Nodes have different state content!");
+            }
+
+            Ok((gw_ping, node1_ping, node2_ping))
+            }
+        };
+
+        // Gateway sends update with its tag
+        let mut gw_ping = Ping::default();
+        gw_ping.insert(gw_tag.clone());
+        tracing::info!(%gw_ping, "Gateway sending update with tag: {}", gw_tag);
+        client_gw
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: contract_key,
+                data: UpdateData::Delta(StateDelta::from(serde_json::to_vec(&gw_ping).unwrap())),
+            }))
+            .await?;
+
+        // Wait for update to propagate
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Node 1 sends update with its tag
+        let mut node1_ping = Ping::default();
+        node1_ping.insert(node1_tag.clone());
+        tracing::info!(%node1_ping, "Node 1 sending update with tag: {}", node1_tag);
+        client_node1
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: contract_key,
+                data: UpdateData::Delta(StateDelta::from(serde_json::to_vec(&node1_ping).unwrap())),
+            }))
+            .await?;
+
+        // Wait for update to propagate
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Node 2 sends update with its tag
+        let mut node2_ping = Ping::default();
+        node2_ping.insert(node2_tag.clone());
+        tracing::info!(%node2_ping, "Node 2 sending update with tag: {}", node2_tag);
+        client_node2
+            .send(ClientRequest::ContractOp(ContractRequest::Update {
+                key: contract_key,
+                data: UpdateData::Delta(StateDelta::from(serde_json::to_vec(&node2_ping).unwrap())),
+            }))
+            .await?;
+
+        // Wait for updates to propagate across the network
+        tracing::info!("Waiting for updates to propagate across the network...");
+        
+        // Retry mechanism to ensure updates propagate
+        let max_retries = 5;
+        let mut retries = 0;
+        let mut all_tags_present = false;
+        
+        while retries < max_retries && !all_tags_present {
+            sleep(Duration::from_secs(5)).await;
+            retries += 1;
+            
+            tracing::info!("Checking update propagation (attempt {}/{})", retries, max_retries);
+            
+            // Get current states from all nodes
+            let (gw_state, node1_state, node2_state) = get_all_states(
+                &mut client_gw,
+                &mut client_node1,
+                &mut client_node2,
+                contract_key,
+            )
+            .await?;
+            
+            // Check if all tags are present in all nodes
+            let tags = vec![gw_tag.clone(), node1_tag.clone(), node2_tag.clone()];
+            all_tags_present = verify_all_tags_present(&gw_state, &node1_state, &node2_state, &tags);
+            
+            if all_tags_present {
+                tracing::info!("SUCCESS: All updates propagated to all nodes!");
+                break;
+            } else {
+                tracing::warn!("Not all updates have propagated yet. Retrying...");
+            }
+        }
+        
+        if !all_tags_present {
+            return Err(anyhow!("Failed to propagate all updates after {} retries", max_retries));
+        }
+
+        let (gw_state, node1_state, node2_state) = get_all_states(
+            &mut client_gw,
+            &mut client_node1,
+            &mut client_node2,
+            contract_key,
+        )
+        .await?;
+        
+        // Verify that all nodes have the same state
+        assert_eq!(gw_state, node1_state, "Gateway and Node1 states should match");
+        assert_eq!(node1_state, node2_state, "Node1 and Node2 states should match");
+        
+        // Verify that all tags are present in all nodes
+        assert!(gw_state.contains_key(&gw_tag), "Gateway state missing gateway tag");
+        assert!(gw_state.contains_key(&node1_tag), "Gateway state missing node1 tag");
+        assert!(gw_state.contains_key(&node2_tag), "Gateway state missing node2 tag");
+        
+        assert!(node1_state.contains_key(&gw_tag), "Node1 state missing gateway tag");
+        assert!(node1_state.contains_key(&node1_tag), "Node1 state missing node1 tag");
+        assert!(node1_state.contains_key(&node2_tag), "Node1 state missing node2 tag");
+        
+        assert!(node2_state.contains_key(&gw_tag), "Node2 state missing gateway tag");
+        assert!(node2_state.contains_key(&node1_tag), "Node2 state missing node1 tag");
+        assert!(node2_state.contains_key(&node2_tag), "Node2 state missing node2 tag");
+
+        tracing::info!("Test completed successfully! All updates propagated through the gateway despite blocked direct connections.");
+        
+        Ok::<_, anyhow::Error>(())
+    })
+    .instrument(span!(Level::INFO, "test_ping_blocked_peers"));
 
     // Wait for test completion or node failures
     select! {
