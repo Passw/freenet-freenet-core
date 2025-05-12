@@ -698,6 +698,8 @@ pub(crate) async fn initial_join_procedure(
         let mut connected = false;
         const WAIT_TIME: u64 = 1;
         const CHECK_AGAIN_TIME: u64 = 15;
+        // Short sleep before starting the connection loop.
+        tokio::time::sleep(Duration::from_secs(1)).await;
         loop {
             if op_manager.ring.open_connections() == 0 {
                 connected = false;
