@@ -544,14 +544,15 @@ impl Operation for UpdateOp {
                         target.peer
                     );
 
-                    return_msg = Some(UpdateMsg::SeekNode {
+                    let update_msg = UpdateMsg::SeekNode {
                         id: *id,
                         sender,
                         target: target.clone(),
                         value: value.clone(),
                         key: *key,
                         related_contracts: related_contracts.clone(),
-                    });
+                    };
+                    return_msg = Some(NetMessage::from(update_msg));
 
                     // no changes to state yet, still in AwaitResponse state
                     new_state = self.state;
@@ -605,7 +606,7 @@ impl Operation for UpdateOp {
                     {
                         Ok((state, msg)) => {
                             new_state = state;
-                            return_msg = msg;
+                            return_msg = msg.map(NetMessage::from);
                         }
                         Err(err) => return Err(err),
                     }
@@ -654,7 +655,7 @@ impl Operation for UpdateOp {
                     {
                         Ok((state, msg)) => {
                             new_state = state;
-                            return_msg = msg;
+                            return_msg = msg.map(NetMessage::from);
                         }
                         Err(err) => return Err(err),
                     }
@@ -752,13 +753,14 @@ impl Operation for UpdateOp {
                     let summary = StateSummary::from(raw_state.into_bytes());
 
                     // Subscriber nodes have been notified of the change, the operation is complete
-                    return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                    let update_msg = UpdateMsg::SuccessfulUpdate {
                         id: *id,
                         target: upstream.clone(),
                         summary,
                         sender: sender.clone(),
                         key: *key,
-                    });
+                    };
+                    return_msg = Some(NetMessage::from(update_msg));
 
                     new_state = None;
                 }
@@ -781,13 +783,14 @@ impl Operation for UpdateOp {
                                 summary: summary.clone(),
                             });
                             if let Some(upstream) = upstream {
-                                return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                                let update_msg = UpdateMsg::SuccessfulUpdate {
                                     id: *id,
                                     target: upstream,
                                     summary: summary.clone(),
                                     key,
                                     sender: op_manager.ring.connection_manager.own_location(),
-                                });
+                                };
+                                return_msg = Some(NetMessage::from(update_msg));
                             } else {
                                 // this means op finalized
                                 return_msg = None;
@@ -1106,7 +1109,7 @@ impl OpManager {
 fn build_op_result(
     id: Transaction,
     state: Option<UpdateState>,
-    return_msg: Option<UpdateMsg>,
+    return_msg: Option<NetMessage>,
     stats: Option<UpdateStats>,
 ) -> Result<super::OperationResult, OpError> {
     let output_op = state.map(|op| UpdateOp {
@@ -1116,7 +1119,7 @@ fn build_op_result(
     });
     let state = output_op.map(OpEnum::Update);
     Ok(OperationResult {
-        return_msg: return_msg.map(NetMessage::from),
+        return_msg,
         state,
     })
 }
