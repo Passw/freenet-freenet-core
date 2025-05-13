@@ -1,7 +1,6 @@
 mod common;
 
 use std::{
-    collections::HashMap,
     fmt::Debug,
     net::{Ipv4Addr, SocketAddr, TcpListener},
     path::PathBuf,
@@ -9,7 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use freenet::{
     config::{ConfigArgs, InlineGwConfig, NetworkArgs, SecretArgs, WebsocketApiArgs},
     dev_tool::TransportKeypair,
@@ -24,9 +23,9 @@ use freenet_stdlib::{
 use futures::{future::BoxFuture, FutureExt};
 use rand::{random, Rng, SeedableRng};
 use testresult::TestResult;
-use tokio::{select, time::sleep};
+use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
-use tracing::{info, span, warn, Instrument, Level};
+use tracing::info;
 
 use freenet_ping_app::ping_client::{
     wait_for_get_response, wait_for_put_response, wait_for_subscribe_response,
@@ -174,7 +173,7 @@ async fn test_ping_broadcast_mechanism() -> TestResult {
 
     let network_socket_gw = TcpListener::bind("127.0.0.1:0")?;
     let gw_network_port = network_socket_gw.local_addr()?.port();
-    let gw_network_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), gw_network_port);
+    let _gw_network_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), gw_network_port);
 
     let ws_api_port_socket_gw = TcpListener::bind("127.0.0.1:0")?;
     let ws_api_port_socket_node1 = TcpListener::bind("127.0.0.1:0")?;
