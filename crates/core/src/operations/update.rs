@@ -474,13 +474,14 @@ impl Operation for UpdateOp {
                             let summary = StateSummary::from(raw_state.into_bytes());
 
                             // Subscriber nodes have been notified of the change, the operation is complete
-                            return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                            let update_msg = UpdateMsg::SuccessfulUpdate {
                                 id: self.id,
                                 target: upstream.clone(),
                                 summary,
                                 sender: op_manager.ring.connection_manager.own_location(),
                                 key: *key,
-                            });
+                            };
+                            return_msg = Some(NetMessage::from(update_msg));
 
                             new_state = None;
                             
@@ -503,13 +504,14 @@ impl Operation for UpdateOp {
                         let raw_state = State::from(new_value.clone());
                         let summary = StateSummary::from(raw_state.into_bytes());
 
-                        return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                        let update_msg = UpdateMsg::SuccessfulUpdate {
                             id: self.id,
                             target: upstream.clone(),
                             summary,
                             sender: op_manager.ring.connection_manager.own_location(),
                             key: *key,
-                        });
+                        };
+                        return_msg = Some(NetMessage::from(update_msg));
 
                         new_state = None;
                         
