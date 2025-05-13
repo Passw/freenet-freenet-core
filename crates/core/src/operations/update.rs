@@ -1069,27 +1069,41 @@ impl OpManager {
         // even if they're not direct subscribers
         if self.ring.is_gateway() {
             tracing::debug!("Gateway node handling update for contract {}", key);
-
-            // Use random_peer to get additional peers that aren't already in broadcast_targets
+            
+            let total_connections = self.ring.connection_manager.num_connections();
+            let mut seen_peers = std::collections::HashSet::new();
+            seen_peers.insert(sender.clone());
+            
+            for target in &broadcast_targets {
+                seen_peers.insert(target.peer.clone());
+            }
+            
             let mut additional_peers = Vec::new();
-            for _ in 0..self.ring.connection_manager.num_connections() {
+            let mut attempts = 0;
+            let max_attempts = total_connections * 5; // Allow multiple attempts to ensure we get all peers
+            
+            while additional_peers.len() < total_connections - seen_peers.len() && attempts < max_attempts {
                 if let Some(peer) = self.ring.connection_manager.random_peer(|peer_id| {
-                    // Filter function: peer must not be the sender and not already in broadcast_targets
-                    peer_id != sender
-                        && !broadcast_targets.iter().any(|p| &p.peer == peer_id)
-                        && !additional_peers
-                            .iter()
-                            .any(|p: &PeerKeyLocation| &p.peer == peer_id)
+                    !seen_peers.contains(peer_id)
                 }) {
                     tracing::debug!(
                         "Gateway adding connected peer {} to broadcast targets for contract {}",
                         peer.peer,
                         key
                     );
+                    seen_peers.insert(peer.peer.clone());
                     additional_peers.push(peer);
                 }
+                attempts += 1;
             }
-
+            
+            tracing::debug!(
+                "Gateway found {} additional peers to forward update for contract {} (after {} attempts)",
+                additional_peers.len(),
+                key,
+                attempts
+            );
+            
             broadcast_targets.extend(additional_peers);
         }
 
