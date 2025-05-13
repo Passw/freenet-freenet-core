@@ -631,31 +631,70 @@ impl Operation for UpdateOp {
                     .await?;
                     tracing::debug!("Contract successfully updated - BroadcastTo - update");
 
+                    let is_gateway = op_manager.ring.is_gateway();
+                    if is_gateway {
+                        tracing::debug!(
+                            "Gateway node handling BroadcastTo for contract {} from {}",
+                            key,
+                            sender.peer
+                        );
+                    }
+
                     let broadcast_to = op_manager.get_broadcast_targets_update(key, &sender.peer);
 
                     tracing::debug!(
-                        "Successfully updated a value for contract {} @ {:?} - BroadcastTo - update",
+                        "Successfully updated a value for contract {} @ {:?} - BroadcastTo - update (is_gateway: {}, broadcast_targets: {})",
                         key,
-                        target.location
+                        target.location,
+                        is_gateway,
+                        broadcast_to.len()
                     );
 
-                    match try_to_broadcast(
-                        *id,
-                        false,
-                        op_manager,
-                        self.state,
-                        (broadcast_to, sender.clone()),
-                        *key,
-                        new_value,
-                        true,
-                    )
-                    .await
-                    {
-                        Ok((state, msg)) => {
-                            new_state = state;
-                            return_msg = msg.map(NetMessage::from);
+                    if is_gateway {
+                        // even if they're not direct subscribers
+                        tracing::debug!(
+                            "Gateway node forwarding update for contract {} to {} peers",
+                            key,
+                            broadcast_to.len()
+                        );
+                        
+                        match try_to_broadcast(
+                            *id,
+                            false, // Don't mark as last hop for gateway nodes
+                            op_manager,
+                            self.state,
+                            (broadcast_to, sender.clone()),
+                            *key,
+                            new_value,
+                            true,
+                        )
+                        .await
+                        {
+                            Ok((state, msg)) => {
+                                new_state = state;
+                                return_msg = msg.map(NetMessage::from);
+                            }
+                            Err(err) => return Err(err),
                         }
-                        Err(err) => return Err(err),
+                    } else {
+                        match try_to_broadcast(
+                            *id,
+                            false,
+                            op_manager,
+                            self.state,
+                            (broadcast_to, sender.clone()),
+                            *key,
+                            new_value,
+                            true,
+                        )
+                        .await
+                        {
+                            Ok((state, msg)) => {
+                                new_state = state;
+                                return_msg = msg.map(NetMessage::from);
+                            }
+                            Err(err) => return Err(err),
+                        }
                     }
                 }
                 UpdateMsg::Broadcasting {
@@ -825,17 +864,33 @@ async fn try_to_broadcast(
 ) -> Result<(Option<UpdateState>, Option<UpdateMsg>), OpError> {
     let new_state;
     let return_msg;
+    
+    // Check if this node is a gateway - gateways should always forward updates
+    let is_gateway = op_manager.ring.is_gateway();
+    
+    // This ensures updates continue to propagate through the network
+    let effective_last_hop = if is_gateway {
+        tracing::debug!(
+            "Gateway node handling update for contract {} (overriding last_hop={})",
+            key,
+            last_hop
+        );
+        false // Never treat as last hop for gateway nodes
+    } else {
+        last_hop
+    };
 
     match state {
         Some(
             UpdateState::ReceivedRequest { retry_count }
             | UpdateState::BroadcastOngoing { retry_count },
         ) => {
-            if broadcast_to.is_empty() && !last_hop {
+            if broadcast_to.is_empty() && !effective_last_hop {
                 // broadcast complete
                 tracing::debug!(
-                    "Empty broadcast list while updating value for contract {} - try_to_broadcast",
-                    key
+                    "Empty broadcast list while updating value for contract {} - try_to_broadcast (is_gateway: {})",
+                    key,
+                    is_gateway
                 );
 
                 return_msg = None;
