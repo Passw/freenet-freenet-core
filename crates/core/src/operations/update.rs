@@ -1163,6 +1163,46 @@ impl OpManager {
         }
 
         if broadcast_targets.is_empty() {
+            // even if there are no direct subscribers
+            if self.ring.is_gateway() {
+                tracing::debug!(
+                    "Gateway node with no direct subscribers for contract {}, forwarding to all connected peers",
+                    key
+                );
+                
+                let total_connections = self.ring.connection_manager.num_connections();
+                let mut seen_peers = std::collections::HashSet::new();
+                seen_peers.insert(sender.clone());
+                
+                let mut all_peers = Vec::new();
+                let mut attempts = 0;
+                let max_attempts = total_connections * 5; // Allow multiple attempts to ensure we get all peers
+                
+                while all_peers.len() < total_connections - seen_peers.len() && attempts < max_attempts {
+                    if let Some(peer) = self.ring.connection_manager.random_peer(|peer_id| {
+                        !seen_peers.contains(peer_id)
+                    }) {
+                        tracing::debug!(
+                            "Gateway adding connected peer {} to broadcast targets for empty subscriber list contract {}",
+                            peer.peer,
+                            key
+                        );
+                        seen_peers.insert(peer.peer.clone());
+                        all_peers.push(peer);
+                    }
+                    attempts += 1;
+                }
+                
+                tracing::debug!(
+                    "Gateway found {} peers to forward update for contract {} with no direct subscribers (after {} attempts)",
+                    all_peers.len(),
+                    key,
+                    attempts
+                );
+                
+                return all_peers;
+            }
+            
             let mut closest_peers = Vec::new();
 
             if let Some(closest) = self.ring.closest_potentially_caching(key, &skip_list) {
