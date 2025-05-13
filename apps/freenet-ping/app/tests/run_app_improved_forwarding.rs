@@ -171,7 +171,70 @@ async fn test_ping_improved_forwarding() -> TestResult {
     let uri_node1 = format!("ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native", ws_api_port_node1);
     let uri_node2 = format!("ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native", ws_api_port_node2);
 
-    let test = async {
+    let gateway_addr = format!("127.0.0.1:{}", config_gw.network_api.public_port.unwrap())
+        .parse::<SocketAddr>()?;
+    let node2_addr = format!("127.0.0.1:{}", ws_api_port_node2)
+        .parse::<SocketAddr>()?;
+    
+    let (config_node1, preset_cfg_node1) = base_node_test_config(
+        false,
+        vec![serde_json::to_string(&config_gw_info)?],
+        None,
+        ws_api_port_node1,
+        Some(vec![node2_addr]), // Block Node2
+    )
+    .await?;
+
+    let node1_addr = format!("127.0.0.1:{}", ws_api_port_node1)
+        .parse::<SocketAddr>()?;
+    
+    let (config_node2, preset_cfg_node2) = base_node_test_config(
+        false,
+        vec![serde_json::to_string(&config_gw_info)?],
+        None,
+        ws_api_port_node2,
+        Some(vec![node1_addr]), // Block Node1
+    )
+    .await?;
+
+    std::mem::drop(network_socket_gw);
+    std::mem::drop(ws_api_port_socket_gw);
+    std::mem::drop(ws_api_port_socket_node1);
+    std::mem::drop(ws_api_port_socket_node2);
+
+    let gateway_node = async {
+        let config = config_gw.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    let node1 = async move {
+        let config = config_node1.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    let node2 = async {
+        let config = config_node2.build().await?;
+        let node = NodeConfig::new(config.clone())
+            .await?
+            .build(serve_gateway(config.ws_api).await)
+            .await?;
+        node.run().await
+    }
+    .boxed_local();
+
+    let test = tokio::time::timeout(Duration::from_secs(120), async {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        
         let (stream_gw, _) = connect_async(&uri_gw).await?;
         let (stream_node1, _) = connect_async(&uri_node1).await?;
         let (stream_node2, _) = connect_async(&uri_node2).await?;
@@ -258,31 +321,42 @@ async fn test_ping_improved_forwarding() -> TestResult {
             let mut client = client_gw;
             let counter = gateway_counter.clone();
             async move {
+                let timeout = tokio::time::sleep(Duration::from_secs(30));
+                tokio::pin!(timeout);
+                
                 loop {
-                    match client.recv().await {
-                        Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
-                            key: update_key,
-                            update,
-                        })) => {
-                            if update_key == contract_key {
-                                match process_ping_update(&mut gateway_state, Duration::from_secs(5), update) {
-                                    Ok(updates) => {
-                                        for (name, _) in updates {
-                                            tracing::info!("Gateway received update from: {}", name);
-                                            let mut counter = counter.lock().await;
-                                            counter.insert(format!("Gateway-{}", name));
+                    tokio::select! {
+                        _ = &mut timeout => {
+                            tracing::info!("Gateway listener timeout reached");
+                            break;
+                        }
+                        result = client.recv() => {
+                            match result {
+                                Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
+                                    key: update_key,
+                                    update,
+                                })) => {
+                                    if update_key == contract_key {
+                                        match process_ping_update(&mut gateway_state, Duration::from_secs(5), update) {
+                                            Ok(updates) => {
+                                                for (name, _) in updates {
+                                                    tracing::info!("Gateway received update from: {}", name);
+                                                    let mut counter = counter.lock().await;
+                                                    counter.insert(format!("Gateway-{}", name));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Error processing update: {}", e);
+                                            }
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::error!("Error processing update: {}", e);
-                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::error!("Error receiving message: {}", e);
+                                    break;
                                 }
                             }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!("Error receiving message: {}", e);
-                            break;
                         }
                     }
                 }
@@ -293,31 +367,42 @@ async fn test_ping_improved_forwarding() -> TestResult {
             let mut client = client_node1;
             let counter = node1_counter.clone();
             async move {
+                let timeout = tokio::time::sleep(Duration::from_secs(30));
+                tokio::pin!(timeout);
+                
                 loop {
-                    match client.recv().await {
-                        Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
-                            key: update_key,
-                            update,
-                        })) => {
-                            if update_key == contract_key {
-                                match process_ping_update(&mut node1_state, Duration::from_secs(5), update) {
-                                    Ok(updates) => {
-                                        for (name, _) in updates {
-                                            tracing::info!("Node1 received update from: {}", name);
-                                            let mut counter = counter.lock().await;
-                                            counter.insert(format!("Node1-{}", name));
+                    tokio::select! {
+                        _ = &mut timeout => {
+                            tracing::info!("Node1 listener timeout reached");
+                            break;
+                        }
+                        result = client.recv() => {
+                            match result {
+                                Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
+                                    key: update_key,
+                                    update,
+                                })) => {
+                                    if update_key == contract_key {
+                                        match process_ping_update(&mut node1_state, Duration::from_secs(5), update) {
+                                            Ok(updates) => {
+                                                for (name, _) in updates {
+                                                    tracing::info!("Node1 received update from: {}", name);
+                                                    let mut counter = counter.lock().await;
+                                                    counter.insert(format!("Node1-{}", name));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Error processing update: {}", e);
+                                            }
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::error!("Error processing update: {}", e);
-                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::error!("Error receiving message: {}", e);
+                                    break;
                                 }
                             }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!("Error receiving message: {}", e);
-                            break;
                         }
                     }
                 }
@@ -328,31 +413,42 @@ async fn test_ping_improved_forwarding() -> TestResult {
             let mut client = client_node2;
             let counter = node2_counter.clone();
             async move {
+                let timeout = tokio::time::sleep(Duration::from_secs(30));
+                tokio::pin!(timeout);
+                
                 loop {
-                    match client.recv().await {
-                        Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
-                            key: update_key,
-                            update,
-                        })) => {
-                            if update_key == contract_key {
-                                match process_ping_update(&mut node2_state, Duration::from_secs(5), update) {
-                                    Ok(updates) => {
-                                        for (name, _) in updates {
-                                            tracing::info!("Node2 received update from: {}", name);
-                                            let mut counter = counter.lock().await;
-                                            counter.insert(format!("Node2-{}", name));
+                    tokio::select! {
+                        _ = &mut timeout => {
+                            tracing::info!("Node2 listener timeout reached");
+                            break;
+                        }
+                        result = client.recv() => {
+                            match result {
+                                Ok(HostResponse::ContractResponse(ContractResponse::UpdateNotification {
+                                    key: update_key,
+                                    update,
+                                })) => {
+                                    if update_key == contract_key {
+                                        match process_ping_update(&mut node2_state, Duration::from_secs(5), update) {
+                                            Ok(updates) => {
+                                                for (name, _) in updates {
+                                                    tracing::info!("Node2 received update from: {}", name);
+                                                    let mut counter = counter.lock().await;
+                                                    counter.insert(format!("Node2-{}", name));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Error processing update: {}", e);
+                                            }
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::error!("Error processing update: {}", e);
-                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::error!("Error receiving message: {}", e);
+                                    break;
                                 }
                             }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::error!("Error receiving message: {}", e);
-                            break;
                         }
                     }
                 }
@@ -441,6 +537,27 @@ async fn test_ping_improved_forwarding() -> TestResult {
         Ok(()) as TestResult
     };
 
-    let result = test.await;
-    result
+    tokio::select! {
+        result = gateway_node => {
+            tracing::error!("Gateway node exited: {:?}", result);
+            panic!("Gateway node exited unexpectedly");
+        }
+        result = node1 => {
+            tracing::error!("Node 1 exited: {:?}", result);
+            panic!("Node 1 exited unexpectedly");
+        }
+        result = node2 => {
+            tracing::error!("Node 2 exited: {:?}", result);
+            panic!("Node 2 exited unexpectedly");
+        }
+        result = test => {
+            match result {
+                Ok(result) => result,
+                Err(_) => {
+                    tracing::error!("Test timed out after 120 seconds");
+                    panic!("Test timed out after 120 seconds");
+                }
+            }
+        }
+    }
 }
