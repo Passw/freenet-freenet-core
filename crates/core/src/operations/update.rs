@@ -1067,18 +1067,31 @@ impl OpManager {
         let skip_list = std::collections::HashSet::from([sender.clone()]);
 
         // even if they're not direct subscribers
-        if self.ring.connection_manager.is_gateway() {
+        if self.ring.connection_manager.get_peer_key().is_some() {
             tracing::debug!("Gateway node handling update for contract {}", key);
 
-            let connected_peers = self.ring.connection_manager.get_connected_peers();
-            for peer in connected_peers {
-                if &peer.peer != sender && !broadcast_targets.iter().any(|p| p.peer == peer.peer) {
-                    tracing::debug!(
-                        "Gateway adding connected peer {} to broadcast targets for contract {}",
-                        peer.peer,
-                        key
-                    );
-                    broadcast_targets.push(peer);
+            let connected_peers: Vec<PeerId> =
+                self.ring.connection_manager.connected_peers().collect();
+            for peer_id in connected_peers {
+                if &peer_id != sender {
+                    // Check if this peer is already in broadcast_targets
+                    if !broadcast_targets.iter().any(|p| p.peer == peer_id) {
+                        if let Some(location) =
+                            self.ring.location_for_peer.read().get(&peer_id).cloned()
+                        {
+                            let peer_location = PeerKeyLocation {
+                                peer: peer_id.clone(),
+                                location: Some(location),
+                            };
+
+                            tracing::debug!(
+                                "Gateway adding connected peer {} to broadcast targets for contract {}",
+                                peer_id,
+                                key
+                            );
+                            broadcast_targets.push(peer_location);
+                        }
+                    }
                 }
             }
         }
