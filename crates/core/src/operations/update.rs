@@ -1174,22 +1174,17 @@ impl OpManager {
                 let mut seen_peers = std::collections::HashSet::new();
                 seen_peers.insert(sender.clone());
                 
-                for peer_id in self.ring.connection_manager.connected_peers() {
-                    if !seen_peers.contains(&peer_id) {
-                        if let Some(location) = self.ring.location_for_peer(&peer_id) {
-                            let peer = PeerKeyLocation {
-                                peer: peer_id.clone(),
-                                location: Some(location),
-                            };
-                            
+                for (_, conns) in self.ring.connection_manager.get_connections_by_location().iter() {
+                    for conn in conns {
+                        if !seen_peers.contains(&conn.location.peer) {
                             tracing::debug!(
                                 "Gateway adding connected peer {} to broadcast targets for empty subscriber list contract {}",
-                                peer.peer,
+                                conn.location.peer,
                                 key
                             );
                             
-                            seen_peers.insert(peer_id);
-                            all_peers.push(peer);
+                            seen_peers.insert(conn.location.peer.clone());
+                            all_peers.push(conn.location.clone());
                         }
                     }
                 }
