@@ -535,7 +535,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
         node2_handle.abort();
 
         Ok(()) as TestResult
-    };
+    });
 
     tokio::select! {
         result = gateway_node => {
