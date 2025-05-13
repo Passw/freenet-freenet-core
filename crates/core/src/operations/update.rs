@@ -386,7 +386,7 @@ impl Operation for UpdateOp {
 
                         let sender = op_manager.ring.connection_manager.own_location();
                         let mut broadcasting = Vec::with_capacity(failed_peers.len());
-                        
+
                         for peer in failed_peers.iter() {
                             let msg = UpdateMsg::BroadcastTo {
                                 id: self.id,
@@ -398,7 +398,7 @@ impl Operation for UpdateOp {
                             let f = conn_manager.send(&peer.peer, msg.into());
                             broadcasting.push(f);
                         }
-                        
+
                         let error_futures = futures::future::join_all(broadcasting)
                             .await
                             .into_iter()
@@ -427,7 +427,7 @@ impl Operation for UpdateOp {
                         }
 
                         successful_broadcasts = failed_peers.len() - still_failed_peers.len();
-                        
+
                         if !still_failed_peers.is_empty() {
                             tracing::debug!(
                                 "Successfully retried broadcast to {} peers, {} peers still failing (retry {}/{})",
@@ -453,9 +453,7 @@ impl Operation for UpdateOp {
 
                             op_manager
                                 .notify_op_change(
-                                    NetMessage::from(UpdateMsg::AwaitUpdate {
-                                        id: self.id,
-                                    }),
+                                    NetMessage::from(UpdateMsg::AwaitUpdate { id: self.id }),
                                     OpEnum::Update(retry_op),
                                 )
                                 .await?;
@@ -484,7 +482,7 @@ impl Operation for UpdateOp {
                             return_msg = Some(NetMessage::from(update_msg));
 
                             new_state = None;
-                            
+
                             return Ok(OperationResult {
                                 return_msg,
                                 state: Some(OpEnum::Update(UpdateOp {
@@ -514,7 +512,7 @@ impl Operation for UpdateOp {
                         return_msg = Some(NetMessage::from(update_msg));
 
                         new_state = None;
-                        
+
                         return Ok(OperationResult {
                             return_msg,
                             state: Some(OpEnum::Update(UpdateOp {
@@ -1064,10 +1062,29 @@ impl OpManager {
             })
             .unwrap_or_default();
 
-        if subscribers.is_empty() {
+        let mut broadcast_targets = subscribers.clone();
+        let key_location = Location::from(key);
+        let skip_list = std::collections::HashSet::from([sender.clone()]);
+
+        // even if they're not direct subscribers
+        if self.ring.connection_manager.is_gateway() {
+            tracing::debug!("Gateway node handling update for contract {}", key);
+
+            let connected_peers = self.ring.connection_manager.get_connected_peers();
+            for peer in connected_peers {
+                if &peer.peer != sender && !broadcast_targets.iter().any(|p| p.peer == peer.peer) {
+                    tracing::debug!(
+                        "Gateway adding connected peer {} to broadcast targets for contract {}",
+                        peer.peer,
+                        key
+                    );
+                    broadcast_targets.push(peer);
+                }
+            }
+        }
+
+        if broadcast_targets.is_empty() {
             let mut closest_peers = Vec::new();
-            let key_location = Location::from(key);
-            let skip_list = std::collections::HashSet::from([sender.clone()]);
 
             if let Some(closest) = self.ring.closest_potentially_caching(key, &skip_list) {
                 closest_peers.push(closest);
@@ -1097,12 +1114,12 @@ impl OpManager {
         }
 
         tracing::debug!(
-            "Forwarding update for contract {} to {} subscribers",
+            "Forwarding update for contract {} to {} targets",
             key,
-            subscribers.len()
+            broadcast_targets.len()
         );
 
-        subscribers
+        broadcast_targets
     }
 }
 
@@ -1118,10 +1135,7 @@ fn build_op_result(
         stats,
     });
     let state = output_op.map(OpEnum::Update);
-    Ok(OperationResult {
-        return_msg,
-        state,
-    })
+    Ok(OperationResult { return_msg, state })
 }
 
 async fn update_contract(
