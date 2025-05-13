@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -186,7 +188,7 @@ async fn test_ping_broadcast_mechanism() -> TestResult {
     let node2_network_port = network_socket_node2.local_addr()?.port();
     let node2_network_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), node2_network_port);
 
-    let (config_gw, preset_cfg_gw, config_gw_info) = {
+    let (config_gw, _preset_cfg_gw, config_gw_info) = {
         let (cfg, preset) = base_node_test_config(
             true,
             vec![],
@@ -205,7 +207,7 @@ async fn test_ping_broadcast_mechanism() -> TestResult {
         &format!("Gateway WS API port: {}", ws_api_port_gw),
     );
 
-    let (config_node1, preset_cfg_node1) = base_node_test_config(
+    let (config_node1, _preset_cfg_node1) = base_node_test_config(
         false,
         vec![serde_json::to_string(&config_gw_info)?],
         Some(node1_network_port),
@@ -220,7 +222,7 @@ async fn test_ping_broadcast_mechanism() -> TestResult {
     );
     node1_logger.log("Node1", &format!("Node1 blocks: {:?}", node2_network_addr));
 
-    let (config_node2, preset_cfg_node2) = base_node_test_config(
+    let (config_node2, _preset_cfg_node2) = base_node_test_config(
         false,
         vec![serde_json::to_string(&config_gw_info)?],
         Some(node2_network_port),
