@@ -85,7 +85,12 @@ impl Operation for UpdateOp {
         match op_manager.pop(msg.id()) {
             Ok(Some(OpEnum::Update(update_op))) => {
                 // Check if we need to retry an AwaitingResponse state
-                if let Some(UpdateState::AwaitingResponse { key, upstream, retry_count }) = &update_op.state {
+                if let Some(UpdateState::AwaitingResponse {
+                    key,
+                    upstream,
+                    retry_count,
+                }) = &update_op.state
+                {
                     if let UpdateMsg::AwaitUpdate { .. } = msg {
                         if *retry_count < MAX_RETRIES {
                             // This is a retry for an AwaitingResponse state
@@ -95,7 +100,7 @@ impl Operation for UpdateOp {
                                 retry_count + 1,
                                 MAX_RETRIES
                             );
-                            
+
                             let new_op = Self {
                                 state: Some(UpdateState::AwaitingResponse {
                                     key: *key,
@@ -105,11 +110,8 @@ impl Operation for UpdateOp {
                                 id: tx,
                                 stats: update_op.stats.clone(),
                             };
-                            
-                            return Ok(OpInitialization {
-                                op: new_op,
-                                sender,
-                            });
+
+                            return Ok(OpInitialization { op: new_op, sender });
                         } else {
                             tracing::warn!(
                                 "Maximum retries ({}) reached for AwaitingResponse state for contract {}",
@@ -119,7 +121,7 @@ impl Operation for UpdateOp {
                         }
                     }
                 }
-                
+
                 Ok(OpInitialization {
                     op: update_op,
                     sender,
@@ -164,14 +166,19 @@ impl Operation for UpdateOp {
             let new_state;
             let stats = self.stats;
 
-            if let Some(UpdateState::AwaitingResponse { key, upstream, retry_count }) = &self.state {
+            if let Some(UpdateState::AwaitingResponse {
+                key,
+                upstream,
+                retry_count,
+            }) = &self.state
+            {
                 if let UpdateMsg::AwaitUpdate { .. } = input {
                     if *retry_count < MAX_RETRIES {
                         let delay_ms = std::cmp::min(
                             BASE_DELAY_MS * (1 << retry_count), // Exponential backoff: BASE_DELAY_MS * 2^retry_count
                             MAX_DELAY_MS,
                         );
-                        
+
                         tracing::debug!(
                             "Retrying update request for contract {} due to timeout (retry {}/{}), delaying for {}ms",
                             key,
@@ -179,12 +186,12 @@ impl Operation for UpdateOp {
                             MAX_RETRIES,
                             delay_ms
                         );
-                        
+
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        
+
                         if let Some(target) = upstream {
                             let sender = op_manager.ring.connection_manager.own_location();
-                            
+
                             let msg = UpdateMsg::SeekNode {
                                 id: self.id,
                                 sender: sender.clone(),
@@ -193,7 +200,7 @@ impl Operation for UpdateOp {
                                 key: *key,
                                 related_contracts: RelatedContracts::default(),
                             };
-                            
+
                             match conn_manager.send(&target.peer, msg.into()).await {
                                 Ok(_) => {
                                     tracing::debug!(
@@ -202,14 +209,13 @@ impl Operation for UpdateOp {
                                         retry_count + 1,
                                         MAX_RETRIES
                                     );
-                                    
+
                                     new_state = Some(UpdateState::AwaitingResponse {
                                         key: *key,
                                         upstream: Some(target.clone()),
                                         retry_count: retry_count + 1,
                                     });
-                                    
-                                    
+
                                     return Ok(OperationResult {
                                         return_msg: None,
                                         state: Some(OpEnum::Update(UpdateOp {
@@ -227,7 +233,7 @@ impl Operation for UpdateOp {
                                         retry_count + 1,
                                         MAX_RETRIES
                                     );
-                                    
+
                                     let retry_op = UpdateOp {
                                         id: self.id,
                                         state: Some(UpdateState::AwaitingResponse {
@@ -237,22 +243,25 @@ impl Operation for UpdateOp {
                                         }),
                                         stats,
                                     };
-                                    
+
                                     op_manager
                                         .notify_op_change(
-                                            NetMessage::from(UpdateMsg::AwaitUpdate { id: self.id }),
+                                            NetMessage::from(UpdateMsg::AwaitUpdate {
+                                                id: self.id,
+                                            }),
                                             OpEnum::Update(retry_op),
                                         )
                                         .await?;
-                                    
+
                                     return Err(OpError::StatePushed);
                                 }
                             }
                         } else {
                             // This is a client-initiated update, we need to find a new target
                             let sender = op_manager.ring.connection_manager.own_location();
-                            
-                            let target = if let Some(location) = op_manager.ring.subscribers_of(key) {
+
+                            let target = if let Some(location) = op_manager.ring.subscribers_of(key)
+                            {
                                 location
                                     .clone()
                                     .pop()
@@ -260,14 +269,17 @@ impl Operation for UpdateOp {
                             } else {
                                 let closest = op_manager
                                     .ring
-                                    .closest_potentially_caching(key, [sender.peer.clone()].as_slice())
+                                    .closest_potentially_caching(
+                                        key,
+                                        [sender.peer.clone()].as_slice(),
+                                    )
                                     .into_iter()
                                     .next()
                                     .ok_or_else(|| RingError::EmptyRing)?;
-                                
+
                                 closest
                             };
-                            
+
                             let msg = UpdateMsg::SeekNode {
                                 id: self.id,
                                 sender: sender.clone(),
@@ -276,7 +288,7 @@ impl Operation for UpdateOp {
                                 key: *key,
                                 related_contracts: RelatedContracts::default(),
                             };
-                            
+
                             match conn_manager.send(&target.peer, msg.into()).await {
                                 Ok(_) => {
                                     tracing::debug!(
@@ -285,14 +297,13 @@ impl Operation for UpdateOp {
                                         retry_count + 1,
                                         MAX_RETRIES
                                     );
-                                    
+
                                     new_state = Some(UpdateState::AwaitingResponse {
                                         key: *key,
                                         upstream: None,
                                         retry_count: retry_count + 1,
                                     });
-                                    
-                                    
+
                                     return Ok(OperationResult {
                                         return_msg: None,
                                         state: Some(OpEnum::Update(UpdateOp {
@@ -310,7 +321,7 @@ impl Operation for UpdateOp {
                                         retry_count + 1,
                                         MAX_RETRIES
                                     );
-                                    
+
                                     let retry_op = UpdateOp {
                                         id: self.id,
                                         state: Some(UpdateState::AwaitingResponse {
@@ -320,14 +331,16 @@ impl Operation for UpdateOp {
                                         }),
                                         stats,
                                     };
-                                    
+
                                     op_manager
                                         .notify_op_change(
-                                            NetMessage::from(UpdateMsg::AwaitUpdate { id: self.id }),
+                                            NetMessage::from(UpdateMsg::AwaitUpdate {
+                                                id: self.id,
+                                            }),
                                             OpEnum::Update(retry_op),
                                         )
                                         .await?;
-                                    
+
                                     return Err(OpError::StatePushed);
                                 }
                             }
@@ -338,8 +351,176 @@ impl Operation for UpdateOp {
                             MAX_RETRIES,
                             key
                         );
+
+                        return Err(OpError::MaxRetriesExceeded(
+                            self.id,
+                            crate::message::TransactionType::Update,
+                        ));
+                    }
+                }
+            } else if let Some(UpdateState::RetryingBroadcast {
+                key,
+                retry_count,
+                failed_peers,
+                upstream,
+                new_value,
+            }) = &self.state
+            {
+                if let UpdateMsg::AwaitUpdate { .. } = input {
+                    if *retry_count < MAX_RETRIES {
+                        let delay_ms = std::cmp::min(
+                            BASE_DELAY_MS * (1 << retry_count), // Exponential backoff: BASE_DELAY_MS * 2^retry_count
+                            MAX_DELAY_MS,
+                        );
+
+                        tracing::debug!(
+                            "Retrying broadcast for contract {} to {} failed peers (retry {}/{}), delaying for {}ms",
+                            key,
+                            failed_peers.len(),
+                            retry_count + 1,
+                            MAX_RETRIES,
+                            delay_ms
+                        );
+
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+                        let sender = op_manager.ring.connection_manager.own_location();
+                        let mut broadcasting = Vec::with_capacity(failed_peers.len());
                         
-                        return Err(OpError::MaxRetriesExceeded(self.id, crate::message::TransactionType::Update));
+                        for peer in failed_peers.iter() {
+                            let msg = UpdateMsg::BroadcastTo {
+                                id: self.id,
+                                key: *key,
+                                new_value: new_value.clone(),
+                                sender: sender.clone(),
+                                target: peer.clone(),
+                            };
+                            let f = conn_manager.send(&peer.peer, msg.into());
+                            broadcasting.push(f);
+                        }
+                        
+                        let error_futures = futures::future::join_all(broadcasting)
+                            .await
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(p, err)| {
+                                if let Err(err) = err {
+                                    Some((p, err))
+                                } else {
+                                    None
+                                }
+                            });
+
+                        let mut still_failed_peers = Vec::new();
+                        let mut successful_broadcasts = 0;
+
+                        for (peer_num, err) in error_futures {
+                            let peer = failed_peers.get(peer_num).unwrap();
+                            tracing::warn!(
+                                "Failed retry broadcasting update to {} with error {} (retry {}/{})",
+                                peer.peer,
+                                err,
+                                retry_count + 1,
+                                MAX_RETRIES
+                            );
+                            still_failed_peers.push(peer.clone());
+                        }
+
+                        successful_broadcasts = failed_peers.len() - still_failed_peers.len();
+                        
+                        if !still_failed_peers.is_empty() {
+                            tracing::debug!(
+                                "Successfully retried broadcast to {} peers, {} peers still failing (retry {}/{})",
+                                successful_broadcasts,
+                                still_failed_peers.len(),
+                                retry_count + 1,
+                                MAX_RETRIES
+                            );
+
+                            new_state = Some(UpdateState::RetryingBroadcast {
+                                key: *key,
+                                retry_count: retry_count + 1,
+                                failed_peers: still_failed_peers,
+                                upstream: upstream.clone(),
+                                new_value: new_value.clone(),
+                            });
+
+                            let retry_op = UpdateOp {
+                                id: self.id,
+                                state: new_state.clone(),
+                                stats,
+                            };
+
+                            op_manager
+                                .notify_op_change(
+                                    NetMessage::from(UpdateMsg::AwaitUpdate {
+                                        id: self.id,
+                                    }),
+                                    OpEnum::Update(retry_op),
+                                )
+                                .await?;
+
+                            return Err(OpError::StatePushed);
+                        } else {
+                            tracing::debug!(
+                                "All {} retry broadcasts succeeded for contract {} (retry {}/{})",
+                                successful_broadcasts,
+                                key,
+                                retry_count + 1,
+                                MAX_RETRIES
+                            );
+
+                            let raw_state = State::from(new_value.clone());
+                            let summary = StateSummary::from(raw_state.into_bytes());
+
+                            // Subscriber nodes have been notified of the change, the operation is complete
+                            return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                                id: self.id,
+                                target: upstream.clone(),
+                                summary,
+                                sender: op_manager.ring.connection_manager.own_location(),
+                                key: *key,
+                            });
+
+                            new_state = None;
+                            
+                            return Ok(OperationResult {
+                                return_msg,
+                                state: Some(OpEnum::Update(UpdateOp {
+                                    id: self.id,
+                                    state: new_state,
+                                    stats,
+                                })),
+                            });
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Maximum retries ({}) reached for RetryingBroadcast state for contract {}",
+                            MAX_RETRIES,
+                            key
+                        );
+
+                        let raw_state = State::from(new_value.clone());
+                        let summary = StateSummary::from(raw_state.into_bytes());
+
+                        return_msg = Some(UpdateMsg::SuccessfulUpdate {
+                            id: self.id,
+                            target: upstream.clone(),
+                            summary,
+                            sender: op_manager.ring.connection_manager.own_location(),
+                            key: *key,
+                        });
+
+                        new_state = None;
+                        
+                        return Ok(OperationResult {
+                            return_msg,
+                            state: Some(OpEnum::Update(UpdateOp {
+                                id: self.id,
+                                state: new_state,
+                                stats,
+                            })),
+                        });
                     }
                 }
             }
@@ -837,7 +1018,6 @@ async fn try_to_broadcast(
                         new_value: retry_value,
                     });
 
-
                     let op = UpdateOp {
                         id,
                         state: new_state.clone(),
@@ -878,39 +1058,45 @@ impl OpManager {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        
+
         if subscribers.is_empty() {
             let mut closest_peers = Vec::new();
             let key_location = Location::from(key);
             let skip_list = std::collections::HashSet::from([sender.clone()]);
-            
+
             if let Some(closest) = self.ring.closest_potentially_caching(key, &skip_list) {
                 closest_peers.push(closest);
-                tracing::debug!("Found closest potentially caching peer for contract {}", key);
+                tracing::debug!(
+                    "Found closest potentially caching peer for contract {}",
+                    key
+                );
             }
-            
-            if let Some(closest) = self.ring.closest_to_location(key_location, skip_list.clone()) {
+
+            if let Some(closest) = self
+                .ring
+                .closest_to_location(key_location, skip_list.clone())
+            {
                 if !closest_peers.iter().any(|p| p.peer == closest.peer) {
                     closest_peers.push(closest);
                     tracing::debug!("Found closest peer by location for contract {}", key);
                 }
             }
-            
+
             tracing::debug!(
                 "No direct subscribers for contract {}, forwarding to {} closest peers",
                 key,
                 closest_peers.len()
             );
-            
+
             return closest_peers;
         }
-        
+
         tracing::debug!(
             "Forwarding update for contract {} to {} subscribers",
             key,
             subscribers.len()
         );
-        
+
         subscribers
     }
 }
@@ -996,14 +1182,19 @@ pub(crate) async fn request_update(
 ) -> Result<(), OpError> {
     let (key, _state_type) = match &update_op.state {
         Some(UpdateState::PrepareRequest { key, .. }) => (key, "PrepareRequest"),
-        Some(UpdateState::RetryingRequest { key, retry_count, .. }) => {
+        Some(UpdateState::RetryingRequest {
+            key, retry_count, ..
+        }) => {
             if *retry_count >= MAX_RETRIES {
                 tracing::warn!(
                     "Maximum retries ({}) reached for initial update request to contract {}",
                     MAX_RETRIES,
                     key
                 );
-                return Err(OpError::MaxRetriesExceeded(update_op.id, crate::message::TransactionType::Update));
+                return Err(OpError::MaxRetriesExceeded(
+                    update_op.id,
+                    crate::message::TransactionType::Update,
+                ));
             }
             (key, "RetryingRequest")
         }
@@ -1071,7 +1262,10 @@ pub(crate) async fn request_update(
                 .await
             {
                 Ok(_) => {
-                    tracing::debug!("Successfully sent initial update request for contract {}", key);
+                    tracing::debug!(
+                        "Successfully sent initial update request for contract {}",
+                        key
+                    );
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -1079,7 +1273,7 @@ pub(crate) async fn request_update(
                         key,
                         err
                     );
-                    
+
                     let retry_state = Some(UpdateState::RetryingRequest {
                         key,
                         target,
@@ -1087,13 +1281,13 @@ pub(crate) async fn request_update(
                         value,
                         retry_count: 0,
                     });
-                    
+
                     let retry_op = UpdateOp {
                         state: retry_state,
                         id,
                         stats: update_op.stats.clone(),
                     };
-                    
+
                     op_manager
                         .notify_op_change(
                             NetMessage::from(UpdateMsg::AwaitUpdate { id }),
@@ -1114,7 +1308,7 @@ pub(crate) async fn request_update(
                 BASE_DELAY_MS * (1 << retry_count), // Exponential backoff: BASE_DELAY_MS * 2^retry_count
                 MAX_DELAY_MS,
             );
-            
+
             tracing::debug!(
                 "Retrying initial update request for contract {} (retry {}/{}), delaying for {}ms",
                 key,
@@ -1122,15 +1316,15 @@ pub(crate) async fn request_update(
                 MAX_RETRIES,
                 delay_ms
             );
-            
+
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            
+
             let new_state = Some(UpdateState::AwaitingResponse {
                 key,
                 upstream: None,
                 retry_count: 0,
             });
-            
+
             let msg = UpdateMsg::RequestUpdate {
                 id,
                 key,
@@ -1138,13 +1332,13 @@ pub(crate) async fn request_update(
                 target: retry_target.clone(),
                 value: value.clone(),
             };
-            
+
             let op = UpdateOp {
                 state: new_state,
                 id,
                 stats: update_op.stats.clone(),
             };
-            
+
             match op_manager
                 .notify_op_change(NetMessage::from(msg), OpEnum::Update(op))
                 .await
@@ -1165,7 +1359,7 @@ pub(crate) async fn request_update(
                         retry_count + 1,
                         MAX_RETRIES
                     );
-                    
+
                     let retry_state = Some(UpdateState::RetryingRequest {
                         key,
                         target: retry_target.clone(),
@@ -1173,13 +1367,13 @@ pub(crate) async fn request_update(
                         value: value.clone(),
                         retry_count: retry_count + 1,
                     });
-                    
+
                     let retry_op = UpdateOp {
                         state: retry_state,
                         id,
                         stats: update_op.stats.clone(),
                     };
-                    
+
                     op_manager
                         .notify_op_change(
                             NetMessage::from(UpdateMsg::AwaitUpdate { id }),
