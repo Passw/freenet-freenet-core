@@ -1067,33 +1067,30 @@ impl OpManager {
         let skip_list = std::collections::HashSet::from([sender.clone()]);
 
         // even if they're not direct subscribers
-        if self.ring.connection_manager.get_peer_key().is_some() {
+        if self.ring.is_gateway() {
             tracing::debug!("Gateway node handling update for contract {}", key);
 
-            let connected_peers: Vec<PeerId> =
-                self.ring.connection_manager.connected_peers().collect();
-            for peer_id in connected_peers {
-                if &peer_id != sender {
-                    // Check if this peer is already in broadcast_targets
-                    if !broadcast_targets.iter().any(|p| p.peer == peer_id) {
-                        if let Some(location) =
-                            self.ring.location_for_peer.read().get(&peer_id).cloned()
-                        {
-                            let peer_location = PeerKeyLocation {
-                                peer: peer_id.clone(),
-                                location: Some(location),
-                            };
-
-                            tracing::debug!(
-                                "Gateway adding connected peer {} to broadcast targets for contract {}",
-                                peer_id,
-                                key
-                            );
-                            broadcast_targets.push(peer_location);
-                        }
-                    }
+            // Use random_peer to get additional peers that aren't already in broadcast_targets
+            let mut additional_peers = Vec::new();
+            for _ in 0..self.ring.connection_manager.num_connections() {
+                if let Some(peer) = self.ring.connection_manager.random_peer(|peer_id| {
+                    // Filter function: peer must not be the sender and not already in broadcast_targets
+                    peer_id != sender
+                        && !broadcast_targets.iter().any(|p| &p.peer == peer_id)
+                        && !additional_peers
+                            .iter()
+                            .any(|p: &PeerKeyLocation| &p.peer == peer_id)
+                }) {
+                    tracing::debug!(
+                        "Gateway adding connected peer {} to broadcast targets for contract {}",
+                        peer.peer,
+                        key
+                    );
+                    additional_peers.push(peer);
                 }
             }
+
+            broadcast_targets.extend(additional_peers);
         }
 
         if broadcast_targets.is_empty() {
