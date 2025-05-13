@@ -140,7 +140,10 @@ const APP_TAG: &str = "ping-app-improved-forwarding";
 async fn test_ping_improved_forwarding() -> TestResult {
     freenet::config::set_logger(
         Some(LevelFilter::DEBUG),
-        Some("debug,freenet::operations::update=trace,freenet::operations::subscribe=trace".to_string()),
+        Some(
+            "debug,freenet::operations::update=trace,freenet::operations::subscribe=trace"
+                .to_string(),
+        ),
     );
 
     let network_socket_gw = TcpListener::bind("127.0.0.1:0")?;
@@ -166,16 +169,24 @@ async fn test_ping_improved_forwarding() -> TestResult {
     let ws_api_port_gw = config_gw.ws_api.ws_api_port.unwrap();
     let ws_api_port_node1 = ws_api_port_socket_node1.local_addr()?.port();
     let ws_api_port_node2 = ws_api_port_socket_node2.local_addr()?.port();
-    
-    let uri_gw = format!("ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native", ws_api_port_gw);
-    let uri_node1 = format!("ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native", ws_api_port_node1);
-    let uri_node2 = format!("ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native", ws_api_port_node2);
+
+    let uri_gw = format!(
+        "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+        ws_api_port_gw
+    );
+    let uri_node1 = format!(
+        "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+        ws_api_port_node1
+    );
+    let uri_node2 = format!(
+        "ws://127.0.0.1:{}/v1/contract/command?encodingProtocol=native",
+        ws_api_port_node2
+    );
 
     let gateway_addr = format!("127.0.0.1:{}", config_gw.network_api.public_port.unwrap())
         .parse::<SocketAddr>()?;
-    let node2_addr = format!("127.0.0.1:{}", ws_api_port_node2)
-        .parse::<SocketAddr>()?;
-    
+    let node2_addr = format!("127.0.0.1:{}", ws_api_port_node2).parse::<SocketAddr>()?;
+
     let (config_node1, preset_cfg_node1) = base_node_test_config(
         false,
         vec![serde_json::to_string(&config_gw_info)?],
@@ -185,9 +196,8 @@ async fn test_ping_improved_forwarding() -> TestResult {
     )
     .await?;
 
-    let node1_addr = format!("127.0.0.1:{}", ws_api_port_node1)
-        .parse::<SocketAddr>()?;
-    
+    let node1_addr = format!("127.0.0.1:{}", ws_api_port_node1).parse::<SocketAddr>()?;
+
     let (config_node2, preset_cfg_node2) = base_node_test_config(
         false,
         vec![serde_json::to_string(&config_gw_info)?],
@@ -234,19 +244,19 @@ async fn test_ping_improved_forwarding() -> TestResult {
 
     let test = tokio::time::timeout(Duration::from_secs(120), async {
         tokio::time::sleep(Duration::from_secs(10)).await;
-        
+
         let (stream_gw, _) = connect_async(&uri_gw).await?;
         let (stream_node1, _) = connect_async(&uri_node1).await?;
         let (stream_node2, _) = connect_async(&uri_node2).await?;
-        
+
         let mut client_gw = WebApi::start(stream_gw);
         let mut client_node1 = WebApi::start(stream_node1);
         let mut client_node2 = WebApi::start(stream_node2);
-        
+
         let (stream_gw_update, _) = connect_async(&uri_gw).await?;
         let (stream_node1_update, _) = connect_async(&uri_node1).await?;
         let (stream_node2_update, _) = connect_async(&uri_node2).await?;
-        
+
         let mut client_gw_update = WebApi::start(stream_gw_update);
         let mut client_node1_update = WebApi::start(stream_node1_update);
         let mut client_node2_update = WebApi::start(stream_node2_update);
@@ -280,7 +290,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
         tracing::info!("Deployed ping contract with key: {}", contract_key);
 
         client_node1
-            .send(ClientRequest::ContractOp(ContractRequest::Subscribe { 
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
                 key: contract_key.clone(),
                 summary: None,
             }))
@@ -289,7 +299,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
         tracing::info!("Node1 subscribed to contract: {}", contract_key);
 
         client_node2
-            .send(ClientRequest::ContractOp(ContractRequest::Subscribe { 
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
                 key: contract_key.clone(),
                 summary: None,
             }))
@@ -298,7 +308,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
         tracing::info!("Node2 subscribed to contract: {}", contract_key);
 
         client_gw
-            .send(ClientRequest::ContractOp(ContractRequest::Subscribe { 
+            .send(ClientRequest::ContractOp(ContractRequest::Subscribe {
                 key: contract_key.clone(),
                 summary: None,
             }))
@@ -323,7 +333,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
             async move {
                 let timeout = tokio::time::sleep(Duration::from_secs(30));
                 tokio::pin!(timeout);
-                
+
                 loop {
                     tokio::select! {
                         _ = &mut timeout => {
@@ -369,7 +379,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
             async move {
                 let timeout = tokio::time::sleep(Duration::from_secs(30));
                 tokio::pin!(timeout);
-                
+
                 loop {
                     tokio::select! {
                         _ = &mut timeout => {
@@ -415,7 +425,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
             async move {
                 let timeout = tokio::time::sleep(Duration::from_secs(30));
                 tokio::pin!(timeout);
-                
+
                 loop {
                     tokio::select! {
                         _ = &mut timeout => {
@@ -468,14 +478,14 @@ async fn test_ping_improved_forwarding() -> TestResult {
         let mut update1_propagated = false;
         for i in 1..=5 {
             sleep(Duration::from_millis(500 * i)).await;
-            
+
             let counter = update_counter.lock().await;
             if counter.contains("Gateway-Update1") && counter.contains("Node2-Update1") {
                 tracing::info!("Update1 propagated to all nodes successfully");
                 update1_propagated = true;
                 break;
             }
-            
+
             if i == 5 {
                 tracing::warn!("Update1 failed to propagate to all nodes after maximum retries");
             }
@@ -499,11 +509,11 @@ async fn test_ping_improved_forwarding() -> TestResult {
         let mut update2_propagated = false;
         for i in 1..=5 {
             sleep(Duration::from_millis(500 * i)).await;
-            
+
             let counter = update_counter.lock().await;
             if counter.contains("Gateway-Update2") {
                 tracing::info!("Update2 propagated to Gateway successfully");
-                
+
                 if counter.contains("Node1-Update2") {
                     tracing::info!("Update2 propagated to Node1 successfully");
                     update2_propagated = true;
@@ -512,7 +522,7 @@ async fn test_ping_improved_forwarding() -> TestResult {
                     tracing::warn!("Update2 failed to propagate from Gateway to Node1");
                 }
             }
-            
+
             if i == 5 {
                 tracing::warn!("Update2 failed to propagate to all nodes after maximum retries");
             }
