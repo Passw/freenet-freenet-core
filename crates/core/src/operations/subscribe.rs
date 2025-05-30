@@ -87,6 +87,16 @@ pub(crate) async fn request_subscribe(
         return Err(OpError::UnexpectedOpState);
     };
 
+    let own_peer = op_manager.ring.connection_manager.own_location();
+    if let Some(SubscribeState::PrepareRequest { key, .. }) = &sub_op.state {
+        tracing::debug!(
+            "Starting subscribe operation from peer {} for contract {}, routing to {}",
+            own_peer.peer,
+            key,
+            target.peer
+        );
+    }
+
     match sub_op.state {
         Some(SubscribeState::PrepareRequest { id, key, .. }) => {
             let new_state = Some(SubscribeState::AwaitingResponse {
@@ -279,6 +289,14 @@ impl Operation for SubscribeOp {
                         );
                     }
 
+                    tracing::debug!(
+                        tx = %id,
+                        %key,
+                        "Attempting to add subscriber {} to contract at peer {}",
+                        subscriber.peer,
+                        this_peer.peer
+                    );
+
                     if op_manager
                         .ring
                         .add_subscriber(key, subscriber.clone())
@@ -287,6 +305,26 @@ impl Operation for SubscribeOp {
                         tracing::debug!(tx = %id, %key, "Max number of subscribers reached for contract");
                         // max number of subscribers for this contract reached
                         return Ok(return_not_subbed());
+                    }
+
+                    // Log current subscriber list
+                    if let Some(subs) = op_manager.ring.subscribers_of(key) {
+                        let sub_list = subs.value();
+                        tracing::debug!(
+                            tx = %id,
+                            %key,
+                            "Contract now has {} subscribers after adding {}",
+                            sub_list.len(),
+                            subscriber.peer
+                        );
+                        for (i, sub) in sub_list.iter().enumerate() {
+                            tracing::debug!(
+                                "  Subscriber {}: {} at location {:?}",
+                                i + 1,
+                                sub.peer,
+                                sub.location
+                            );
+                        }
                     }
 
                     match self.state {

@@ -366,16 +366,62 @@ impl ConnectionManager {
     ) -> Option<PeerKeyLocation> {
         use rand::seq::SliceRandom;
         let connections = self.connections_by_location.read();
-        let peers = connections.values().filter_map(|conns| {
-            let conn = conns.choose(&mut rand::thread_rng())?;
-            if let Some(requester) = requesting {
-                if requester == &conn.location.peer {
-                    return None;
+        let available_peers: Vec<_> = connections
+            .values()
+            .filter_map(|conns| {
+                let conn = conns.choose(&mut rand::thread_rng())?;
+                if let Some(requester) = requesting {
+                    if requester == &conn.location.peer {
+                        return None;
+                    }
                 }
+                (!skip_list.has_element(conn.location.peer.clone())).then_some(&conn.location)
+            })
+            .collect();
+
+        // Log routing decision details
+        let own_location = self.own_location();
+        tracing::debug!(
+            "Routing decision - from: {} (loc: {:?}), target: {}, available peers: {}",
+            own_location.peer,
+            own_location.location,
+            target,
+            available_peers.len()
+        );
+
+        // Log each available peer with their distance to target
+        for peer in &available_peers {
+            if let Some(loc) = peer.location {
+                let distance = target.distance(loc);
+                tracing::debug!(
+                    "  Candidate peer: {} at location {} (distance to target: {})",
+                    peer.peer,
+                    loc,
+                    distance
+                );
             }
-            (!skip_list.has_element(conn.location.peer.clone())).then_some(&conn.location)
-        });
-        router.select_peer(peers, target).cloned()
+        }
+
+        let selected = router
+            .select_peer(available_peers, target)
+            .cloned();
+
+        if let Some(ref peer) = selected {
+            if let Some(loc) = peer.location {
+                let distance = target.distance(loc);
+                tracing::debug!(
+                    "  ✓ Selected peer: {} at location {} (distance: {}) for target {}",
+                    peer.peer,
+                    loc,
+                    distance,
+                    target
+                );
+            }
+        } else {
+            tracing::debug!("  ✗ No peer selected for routing to target {}", target);
+        }
+
+        selected
     }
 
     pub fn num_connections(&self) -> usize {

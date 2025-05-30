@@ -212,6 +212,14 @@ impl Operation for UpdateOp {
                     sender,
                     target,
                 } => {
+                    let own_peer = op_manager.ring.connection_manager.own_location();
+                    tracing::debug!(
+                        "Received BroadcastTo message at peer {} from {} for contract {}",
+                        own_peer.peer,
+                        sender.peer,
+                        key
+                    );
+
                     if let Some(UpdateState::AwaitingResponse { .. }) = self.state {
                         tracing::debug!("Trying to broadcast to a peer that was the initiator of the op because it received the client request, or is in the middle of a seek node process");
                         return Err(OpError::StatePushed);
@@ -268,7 +276,19 @@ impl Operation for UpdateOp {
 
                     let mut broadcasting = Vec::with_capacity(broadcast_to.len());
 
-                    for peer in broadcast_to.iter() {
+                    tracing::debug!(
+                        "Broadcasting update for contract {} to {} peers",
+                        key,
+                        broadcast_to.len()
+                    );
+
+                    for (i, peer) in broadcast_to.iter().enumerate() {
+                        tracing::debug!(
+                            "  Sending BroadcastTo message #{} to peer {} at location {:?}",
+                            i + 1,
+                            peer.peer,
+                            peer.location
+                        );
                         let msg = UpdateMsg::BroadcastTo {
                             id: *id,
                             key: *key,
@@ -462,13 +482,40 @@ impl OpManager {
             .ring
             .subscribers_of(key)
             .map(|subs| {
-                subs.value()
+                let all_subs = subs.value();
+                tracing::debug!("Contract {} has {} total subscribers", key, all_subs.len());
+
+                let filtered: Vec<_> = all_subs
                     .iter()
                     .filter(|pk| &pk.peer != sender)
                     .cloned()
-                    .collect::<Vec<_>>()
+                    .collect();
+
+                tracing::debug!(
+                    "Broadcasting update for contract {} from {} to {} peers (filtered out sender)",
+                    key,
+                    sender,
+                    filtered.len()
+                );
+
+                for (i, peer) in filtered.iter().enumerate() {
+                    tracing::debug!(
+                        "  Broadcast target {}: {} at location {:?}",
+                        i + 1,
+                        peer.peer,
+                        peer.location
+                    );
+                }
+
+                filtered
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "No subscribers found for contract {} - update will not be broadcasted!",
+                    key
+                );
+                vec![]
+            });
 
         subscribers
     }
