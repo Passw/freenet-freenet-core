@@ -230,7 +230,7 @@ fn compile_options(cli_config: &BuildToolConfig) -> impl Iterator<Item = String>
         .chain(release.iter().map(|s| s.to_string()))
 }
 // TODO: refactor so we share the implementation with fdev (need to extract to )
-fn compile_contract(contract_path: &PathBuf) -> anyhow::Result<Vec<u8>> {
+pub fn compile_contract(contract_path: &PathBuf) -> anyhow::Result<Vec<u8>> {
     println!("module path: {contract_path:?}");
     let target = std::env::var(TARGET_DIR_VAR)
         .map_err(|_| anyhow::anyhow!("CARGO_TARGET_DIR should be set"))?;
@@ -251,6 +251,29 @@ fn compile_contract(contract_path: &PathBuf) -> anyhow::Result<Vec<u8>> {
         .join(WASM_FILE_NAME.replace('-', "_"))
         .with_extension("wasm");
     println!("output file: {output_file:?}");
+
+    // Check if file exists
+    if !output_file.exists() {
+        eprintln!("Error: WASM file does not exist at expected path: {output_file:?}");
+        eprintln!("Looking for alternative paths...");
+
+        // Try looking in the directory
+        let wasm_dir = Path::new(&target).join(WASM_TARGET).join("debug");
+        if wasm_dir.exists() {
+            eprintln!("Contents of {wasm_dir:?}:");
+            if let Ok(entries) = std::fs::read_dir(&wasm_dir) {
+                for entry in entries.flatten() {
+                    eprintln!("  - {}", entry.path().display());
+                }
+            }
+        }
+
+        return Err(anyhow::anyhow!(
+            "WASM file not found at: {}",
+            output_file.display()
+        ));
+    }
+
     Ok(std::fs::read(output_file)?)
 }
 
@@ -344,10 +367,11 @@ pub async fn deploy_contract(
     options: &PingContractOptions,
     subscribe: bool,
 ) -> Result<ContractKey> {
-    let path_to_code = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
-    let code = std::fs::read(path_to_code)?;
+    let path_to_contract = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
     let params = Parameters::from(serde_json::to_vec(options)?);
-    let container = ContractContainer::try_from((code, &params))?;
+
+    // Load and compile the contract
+    let container = load_contract(&path_to_contract, params)?;
     let contract_key = container.key();
 
     let wrapped_state = WrappedState::new(serde_json::to_vec(&initial_ping_state)?);

@@ -1,6 +1,6 @@
 mod common;
 
-use std::{net::TcpListener, path::PathBuf, time::Duration};
+use std::{net::TcpListener, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
 use freenet::{local_node::NodeConfig, server::serve_gateway};
@@ -150,11 +150,9 @@ async fn test_ping_multi_node() -> TestResult {
 
         // FIXME: this is error prone, rebuild the contract each time there are changes in the code
         // (add a build.rs script to the contracts/ping crate)
-        let path_to_code = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
-        tracing::info!(path=%path_to_code.display(), "loading contract code");
-        let code = std::fs::read(path_to_code)
-            .ok()
-            .ok_or_else(|| anyhow!("Failed to read contract code"))?;
+        let contract_path = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
+        tracing::info!(path=%contract_path.display(), "compiling contract");
+        let code = common::compile_contract(&contract_path)?;
         let code_hash = CodeHash::from_code(&code);
         tracing::info!(code_hash=%code_hash, "loaded contract code");
 
@@ -166,7 +164,8 @@ async fn test_ping_multi_node() -> TestResult {
             code_key: code_hash.to_string(),
         };
         let params = Parameters::from(serde_json::to_vec(&ping_options).unwrap());
-        let container = ContractContainer::try_from((code, &params))?;
+        let contract_bytes = WrappedContract::new(Arc::new(ContractCode::from(code)), params);
+        let container = ContractContainer::Wasm(ContractWasmAPIVersion::V1(contract_bytes));
         let contract_key = container.key();
 
         // Step 1: Gateway node puts the contrac
@@ -576,12 +575,10 @@ async fn test_ping_application_loop() -> TestResult {
         let mut client_node1 = WebApi::start(stream_node1);
         let mut client_node2 = WebApi::start(stream_node2);
 
-        // Load the ping contrac
-        let path_to_code = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
-        tracing::info!(path=%path_to_code.display(), "loading contract code");
-        let code = std::fs::read(path_to_code)
-            .ok()
-            .ok_or_else(|| anyhow!("Failed to read contract code"))?;
+        // Load the ping contract
+        let contract_path = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
+        tracing::info!(path=%contract_path.display(), "compiling contract");
+        let code = common::compile_contract(&contract_path)?;
         let code_hash = CodeHash::from_code(&code);
 
         // Create ping contract options for each node with different tags
@@ -607,7 +604,9 @@ async fn test_ping_application_loop() -> TestResult {
         };
 
         let params = Parameters::from(serde_json::to_vec(&gw_options).unwrap());
-        let container = ContractContainer::try_from((code, &params))?;
+        let contract_bytes =
+            WrappedContract::new(Arc::new(ContractCode::from(code.clone())), params);
+        let container = ContractContainer::Wasm(ContractWasmAPIVersion::V1(contract_bytes));
         let contract_key = container.key();
 
         // Step 1: Gateway node puts the contrac
@@ -1077,11 +1076,9 @@ async fn test_ping_partially_connected_network() -> TestResult {
         }
 
         // Load the ping contract
-        let path_to_code = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
-        tracing::info!(path=%path_to_code.display(), "loading contract code");
-        let code = std::fs::read(path_to_code)
-            .ok()
-            .ok_or_else(|| anyhow!("Failed to read contract code"))?;
+        let contract_path = PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
+        tracing::info!(path=%contract_path.display(), "compiling contract");
+        let code = common::compile_contract(&contract_path)?;
         let code_hash = CodeHash::from_code(&code);
 
         // Create ping contract options
@@ -1093,7 +1090,8 @@ async fn test_ping_partially_connected_network() -> TestResult {
         };
 
         let params = Parameters::from(serde_json::to_vec(&ping_options).unwrap());
-        let container = ContractContainer::try_from((code, &params))?;
+        let contract_bytes = WrappedContract::new(Arc::new(ContractCode::from(code)), params);
+        let container = ContractContainer::Wasm(ContractWasmAPIVersion::V1(contract_bytes));
         let contract_key = container.key();
 
         // Choose a node to publish the contract

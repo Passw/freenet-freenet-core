@@ -40,6 +40,7 @@ mod common;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener},
+    sync::Arc,
     time::Duration,
 };
 
@@ -249,11 +250,9 @@ async fn run_blocked_peers_test(config: BlockedPeersConfig) -> TestResult {
         let mut client_node2 = WebApi::start(stream_node2);
 
         // Load contract code
-        let path_to_code = std::path::PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
-        tracing::info!(path=%path_to_code.display(), "Loading contract code");
-        let code = std::fs::read(path_to_code)
-            .ok()
-            .ok_or_else(|| anyhow!("Failed to read contract code"))?;
+        let contract_path = std::path::PathBuf::from(PACKAGE_DIR).join(PATH_TO_CONTRACT);
+        tracing::info!(path=%contract_path.display(), "Compiling contract");
+        let code = common::compile_contract(&contract_path)?;
         let code_hash = CodeHash::from_code(&code);
 
         // Define contract options
@@ -264,7 +263,8 @@ async fn run_blocked_peers_test(config: BlockedPeersConfig) -> TestResult {
             code_key: code_hash.to_string(),
         };
         let params = Parameters::from(serde_json::to_vec(&ping_options).unwrap());
-        let container = ContractContainer::try_from((code, &params))?;
+        let contract_bytes = WrappedContract::new(Arc::new(ContractCode::from(code)), params);
+        let container = ContractContainer::Wasm(ContractWasmAPIVersion::V1(contract_bytes));
         let contract_key = container.key();
 
         // Gateway puts the contract
