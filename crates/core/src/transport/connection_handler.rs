@@ -26,6 +26,20 @@ use tokio::{
 use tracing::{span, Instrument};
 use version_cmp::PROTOC_VERSION;
 
+/// Generate a short hash of a key for logging purposes
+fn hash_key_for_logging(key_bytes: &[u8]) -> String {
+    let hash = blake3::hash(key_bytes);
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        hash.as_bytes()[0],
+        hash.as_bytes()[1],
+        hash.as_bytes()[2],
+        hash.as_bytes()[3],
+        hash.as_bytes()[4],
+        hash.as_bytes()[5]
+    )
+}
+
 use super::{
     crypto::{TransportKeypair, TransportPublicKey},
     packet_data::{PacketData, SymmetricAES, MAX_PACKET_SIZE},
@@ -412,6 +426,15 @@ impl<S: Socket> UdpPacketsListener<S> {
                             }
 
                             let inbound_key_bytes = key_from_addr(&remote_addr);
+                            let inbound_key_hash = hash_key_for_logging(&inbound_key_bytes);
+
+                            tracing::info!(
+                                target: "freenet_core::transport::gw_connection",
+                                %remote_addr,
+                                inbound_key_hash = %inbound_key_hash,
+                                "Gateway connection initiated - new node connecting"
+                            );
+
                             let (gw_ongoing_connection, packets_sender) = self.gateway_connection(packet_data, remote_addr, inbound_key_bytes);
                             let task = tokio::spawn(gw_ongoing_connection
                                 .instrument(tracing::span!(tracing::Level::DEBUG, "gateway_connection"))

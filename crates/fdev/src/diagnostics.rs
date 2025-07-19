@@ -34,6 +34,7 @@ pub async fn diagnostics(base_cfg: BaseConfig, contract_keys: Vec<String>) -> an
         include_system_metrics: true,
         include_detailed_peer_info: true,
         include_subscriber_peer_ids: true,
+        include_connection_details: true,
     };
 
     execute_command(
@@ -91,6 +92,35 @@ pub async fn diagnostics(base_cfg: BaseConfig, contract_keys: Vec<String>) -> an
             table.printstd();
         } else {
             println!("  Connected peers: None");
+        }
+
+        // Connection details with encryption key tracking
+        if !network_info.connection_details.is_empty() {
+            println!("\n🔐 Connection Details (with encryption keys):");
+            let mut table = Table::new();
+            table.add_row(Row::new(vec![
+                Cell::new("Peer ID"),
+                Cell::new("Address"), 
+                Cell::new("State"),
+                Cell::new("Inbound Key Hash"),
+                Cell::new("Outbound Key Hash"),
+                Cell::new("Connected At"),
+                Cell::new("Last Activity"),
+            ]));
+
+            for detail in &network_info.connection_details {
+                table.add_row(Row::new(vec![
+                    Cell::new(&detail.peer_id),
+                    Cell::new(&detail.address),
+                    Cell::new(&detail.connection_state),
+                    Cell::new(&detail.inbound_key_hash[..8]), // Show first 8 chars of hash
+                    Cell::new(&detail.outbound_key_hash[..8]), // Show first 8 chars of hash  
+                    Cell::new(&detail.connected_at.as_deref().unwrap_or("N/A")),
+                    Cell::new(&detail.last_activity.as_deref().unwrap_or("N/A")),
+                ]));
+            }
+
+            table.printstd();
         }
         println!();
     }

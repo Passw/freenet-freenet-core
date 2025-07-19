@@ -107,12 +107,24 @@ impl NetworkBridge for P2pBridge {
 type PeerConnChannelSender = Sender<Either<NetMessage, ConnEvent>>;
 type PeerConnChannelRecv = Receiver<Either<NetMessage, ConnEvent>>;
 
+#[derive(Debug, Clone)]
+struct ConnectionDiagnosticInfo {
+    address: std::net::SocketAddr,
+    inbound_key_hash: String,
+    outbound_key_hash: String,
+    connection_state: String,
+    connected_at: std::time::Instant,
+    last_activity: std::time::Instant,
+}
+
 pub(in crate::node) struct P2pConnManager {
     pub(in crate::node) gateways: Vec<PeerKeyLocation>,
     pub(in crate::node) bridge: P2pBridge,
     conn_bridge_rx: Receiver<P2pBridgeEvent>,
     event_listener: Box<dyn NetEventRegister>,
     connections: HashMap<PeerId, PeerConnChannelSender>,
+    // Store connection diagnostics info for gateway debugging
+    connection_diagnostics: HashMap<PeerId, ConnectionDiagnosticInfo>,
     key_pair: TransportKeypair,
     listening_ip: IpAddr,
     listening_port: u16,
@@ -149,6 +161,7 @@ impl P2pConnManager {
             conn_bridge_rx: rx_bridge_cmd,
             event_listener: Box::new(event_listener),
             connections: HashMap::new(),
+            connection_diagnostics: HashMap::new(),
             key_pair,
             listening_ip: listener_ip,
             listening_port: listen_port,
@@ -300,6 +313,20 @@ impl P2pConnManager {
                             NodeEvent::DropConnection(peer) => {
                                 tracing::debug!(%peer, "Dropping connection");
                                 if let Some(conn) = self.connections.remove(&peer) {
+                                    // Also remove diagnostic info
+                                    if let Some(diagnostic_info) =
+                                        self.connection_diagnostics.remove(&peer)
+                                    {
+                                        tracing::info!(
+                                            target: "freenet_core::node::diagnostics",
+                                            peer_id = %peer,
+                                            peer_addr = %peer.addr,
+                                            inbound_key_hash = %diagnostic_info.inbound_key_hash,
+                                            outbound_key_hash = %diagnostic_info.outbound_key_hash,
+                                            connection_duration = ?diagnostic_info.connected_at.elapsed(),
+                                            "Connection dropped - diagnostic info removed"
+                                        );
+                                    }
                                     // TODO: review: this could potentially leave garbage tasks in the background with peer listener
                                     timeout(
                                         Duration::from_secs(1),
@@ -448,9 +475,64 @@ impl P2pConnManager {
                                         .map(|p| (p.to_string(), p.addr.to_string()))
                                         .collect();
 
+                                    // Log connection details for debugging gateway connectivity issues
+                                    if self.is_gateway {
+                                        tracing::info!(
+                                            target: "freenet_core::node::diagnostics",
+                                            connection_count = self.connections.len(),
+                                            is_gateway = self.is_gateway,
+                                            "Gateway connection diagnostics available"
+                                        );
+
+                                        for (peer_key, _peer_conn) in &self.connections {
+                                            tracing::info!(
+                                                target: "freenet_core::node::diagnostics",
+                                                peer_id = %peer_key,
+                                                address = %peer_key.addr,
+                                                connection_type = "gateway",
+                                                "Active gateway connection"
+                                            );
+                                        }
+                                    }
+
+                                    // Collect connection details if requested
+                                    let connection_details = if config.include_connection_details {
+                                        self.connection_diagnostics
+                                            .iter()
+                                            .map(|(peer_id, info)| {
+                                                freenet_stdlib::client_api::ConnectionDetail {
+                                                    peer_id: peer_id.to_string(),
+                                                    address: info.address.to_string(),
+                                                    inbound_key_hash: info.inbound_key_hash.clone(),
+                                                    outbound_key_hash: info
+                                                        .outbound_key_hash
+                                                        .clone(),
+                                                    connection_state: info.connection_state.clone(),
+                                                    connected_at: Some(
+                                                        info.connected_at
+                                                            .elapsed()
+                                                            .as_secs()
+                                                            .to_string()
+                                                            + " seconds ago",
+                                                    ),
+                                                    last_activity: Some(
+                                                        info.last_activity
+                                                            .elapsed()
+                                                            .as_secs()
+                                                            .to_string()
+                                                            + " seconds ago",
+                                                    ),
+                                                }
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+
                                     response.network_info = Some(NetworkInfo {
                                         connected_peers,
                                         active_connections: self.connections.len(),
+                                        connection_details,
                                     });
                                 }
 
@@ -953,6 +1035,35 @@ impl P2pConnManager {
         }
         let (tx, rx) = mpsc::channel(10);
         self.connections.insert(peer_id.clone(), tx);
+
+        // Capture connection diagnostic info for gateway debugging
+        let (inbound_key_hash, outbound_key_hash) = connection.get_key_hashes();
+        let connection_state = connection.get_connection_state();
+        let now = std::time::Instant::now();
+
+        let diagnostic_info = ConnectionDiagnosticInfo {
+            address: peer_id.addr,
+            inbound_key_hash: inbound_key_hash.clone(),
+            outbound_key_hash: outbound_key_hash.clone(),
+            connection_state: connection_state.clone(),
+            connected_at: now,
+            last_activity: now,
+        };
+
+        self.connection_diagnostics
+            .insert(peer_id.clone(), diagnostic_info);
+
+        // Log the connection establishment with key information
+        tracing::info!(
+            target: "freenet_core::node::diagnostics",
+            peer_id = %peer_id,
+            peer_addr = %peer_id.addr,
+            inbound_key_hash = %inbound_key_hash,
+            outbound_key_hash = %outbound_key_hash,
+            connection_state = %connection_state,
+            "Connection established - diagnostic info captured"
+        );
+
         let task = peer_connection_listener(rx, connection).boxed();
         state.peer_connections.push(task);
         Ok(())
@@ -1018,6 +1129,15 @@ impl P2pConnManager {
                             .prune_connection(peer.clone())
                             .await;
                         self.connections.remove(&peer);
+
+                        // Clean up diagnostic information for dropped connection
+                        self.connection_diagnostics.remove(&peer);
+                        tracing::debug!(
+                            target: "freenet_core::transport::gateway_debug",
+                            %peer,
+                            "Cleaned up diagnostic info for dropped connection (transport error)"
+                        );
+
                         handshake_handler_msg.drop_connection(peer).await?;
                     }
                 }

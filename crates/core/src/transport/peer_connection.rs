@@ -628,6 +628,54 @@ impl PeerConnection {
         self.remote_conn.remote_addr
     }
 
+    /// Get encryption key hashes for diagnostics (gateway debugging)
+    pub fn get_key_hashes(&self) -> (String, String) {
+        // Hash of inbound key
+        let inbound_hash = {
+            let hash = blake3::hash(&self.remote_conn.inbound_symmetric_key_bytes);
+            format!(
+                "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                hash.as_bytes()[0],
+                hash.as_bytes()[1],
+                hash.as_bytes()[2],
+                hash.as_bytes()[3],
+                hash.as_bytes()[4],
+                hash.as_bytes()[5]
+            )
+        };
+
+        // For outbound key, we can't easily extract the raw key from AES128Gcm
+        // So we'll compute a hash based on a combination of inbound key and peer address
+        // This gives us a consistent identifier for this connection's outbound key
+        let outbound_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&self.remote_conn.inbound_symmetric_key_bytes);
+            hasher.update(&self.remote_conn.remote_addr.to_string().as_bytes());
+            hasher.update(b"outbound");
+            let hash = hasher.finalize();
+            format!(
+                "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                hash.as_bytes()[0],
+                hash.as_bytes()[1],
+                hash.as_bytes()[2],
+                hash.as_bytes()[3],
+                hash.as_bytes()[4],
+                hash.as_bytes()[5]
+            )
+        };
+
+        (inbound_hash, outbound_hash)
+    }
+
+    /// Get connection state for diagnostics
+    pub fn get_connection_state(&self) -> String {
+        if self.failure_count > 0 {
+            "degraded".to_string()
+        } else {
+            "active".to_string()
+        }
+    }
+
     async fn process_inbound(
         &mut self,
         payload: SymmetricMessagePayload,

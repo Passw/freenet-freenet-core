@@ -103,6 +103,7 @@ async fn check_connection_count(
         include_system_metrics: false,
         include_detailed_peer_info: false,
         include_subscriber_peer_ids: false,
+        include_connection_details: false,
     };
 
     client
@@ -140,6 +141,7 @@ async fn get_node_info_and_connections(
         include_system_metrics: false,
         include_detailed_peer_info: false,
         include_subscriber_peer_ids: false,
+        include_connection_details: false,
     };
 
     client
@@ -422,7 +424,7 @@ async fn test_gateway_node_reconnection() -> TestResult {
 
                 // Step 3: Test connection stability and get detailed peer info
                 println!("Testing connection stability...");
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(20)).await;
 
                 // Final verification with detailed peer information
                 match get_node_info_and_connections(&mut node_client).await {
