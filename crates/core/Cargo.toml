@@ -12,6 +12,10 @@ repository = "https://github.com/freenet/freenet-core"
 name = "freenet"
 path = "src/bin/freenet.rs"
 
+[[bin]]
+name = "transport-test"
+path = "src/bin/transport_test.rs"
+
 [dependencies]
 ahash = "0.8"
 anyhow = "1"
@@ -107,3 +111,4 @@ sqlite = ["sqlx"]
 trace = ["tracing-subscriber"]
 trace-ot = ["opentelemetry-jaeger", "trace", "tracing-opentelemetry", "opentelemetry-otlp"]
 websocket = ["axum/ws"]
+testing = ["freenet-stdlib/testing"]

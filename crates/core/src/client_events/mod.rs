@@ -166,7 +166,7 @@ pub trait ClientEventsProxy {
         &mut self,
         id: ClientId,
         response: Result<HostResponse, ClientError>,
-    ) -> BoxFuture<Result<(), ClientError>>;
+    ) -> BoxFuture<'_, Result<(), ClientError>>;
 }
 
 /// Process client events.
@@ -273,6 +273,9 @@ where
                                     }
                                 )))
                             }
+                            QueryResult::NodeDiagnostics(response) => {
+                                Ok(HostResponse::QueryResponse(QueryResponse::NodeDiagnostics(response)))
+                            }
                         };
                         if let Ok(result) = &res {
                             tracing::debug!(%result, "sending client operation response");
@@ -374,6 +377,7 @@ async fn process_open_request(
                         // Register subscription listener if subscribe=true
                         if subscribe {
                             if let Some(subscription_listener) = subscription_listener {
+                                tracing::info!(%client_id, %contract_key, "CLIENT_EVENTS_DEBUG: About to register subscription for PUT");
                                 tracing::debug!(%client_id, %contract_key, "Registering subscription for PUT with auto-subscribe");
                                 let register_listener = op_manager
                                     .notify_contract_handler(
@@ -395,6 +399,7 @@ async fn process_open_request(
                                     Ok(
                                         ContractHandlerEvent::RegisterSubscriberListenerResponse,
                                     ) => {
+                                        tracing::info!(%client_id, %contract_key, "CLIENT_EVENTS_DEBUG: Subscription registration confirmed");
                                         tracing::debug!(
                                             %client_id, %contract_key,
                                             "Subscriber listener registered successfully for PUT"
@@ -403,12 +408,12 @@ async fn process_open_request(
                                     _ => {
                                         tracing::error!(
                                             %client_id, %contract_key,
-                                            "Subscriber listener registration failed for PUT"
+                                            "CLIENT_EVENTS_DEBUG: Subscriber listener registration failed for PUT"
                                         );
                                     }
                                 }
                             } else {
-                                tracing::warn!(%client_id, %contract_key, "PUT with subscribe=true but no subscription_listener");
+                                tracing::error!(%client_id, %contract_key, "CLIENT_EVENTS_DEBUG: PUT with subscribe=true but no subscription_listener");
                             }
                         }
                     }
@@ -711,10 +716,11 @@ async fn process_open_request(
                     freenet_stdlib::client_api::NodeQuery::SubscriptionInfo => {
                         NodeEvent::QuerySubscriptions { callback: tx }
                     }
-                    freenet_stdlib::client_api::NodeQuery::NodeDiagnostics { .. } => {
-                        // TODO: Implement node diagnostics query
-                        tracing::warn!("NodeDiagnostics query not yet implemented");
-                        return Err(Error::Disconnected);  // Using existing error variant
+                    freenet_stdlib::client_api::NodeQuery::NodeDiagnostics { config } => {
+                        NodeEvent::QueryNodeDiagnostics {
+                            config,
+                            callback: tx,
+                        }
                     }
                 };
 
@@ -858,7 +864,7 @@ pub(crate) mod test {
             self.events_to_gen.extend(events)
         }
 
-        fn generate_deterministic_event(&mut self, id: &EventId) -> Option<ClientRequest> {
+        fn generate_deterministic_event(&mut self, id: &EventId) -> Option<ClientRequest<'_>> {
             self.events_to_gen.remove(id)
         }
     }

@@ -92,15 +92,60 @@ impl NetworkBridge for P2pBridge {
     }
 
     async fn send(&self, target: &PeerId, msg: NetMessage) -> super::ConnResult<()> {
+        let send_start = std::time::Instant::now();
+        let msg_type = match &msg {
+            NetMessage::V1(inner) => match inner {
+                crate::message::NetMessageV1::Put(_) => "PUT".to_string(),
+                crate::message::NetMessageV1::Get(_) => "GET".to_string(),
+                crate::message::NetMessageV1::Update(_) => "UPDATE".to_string(),
+                crate::message::NetMessageV1::Subscribe(_) => "SUBSCRIBE".to_string(),
+                _ => format!("{inner:?}")
+                    .split('(')
+                    .next()
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            },
+        };
+
+        tracing::debug!(
+            target = %target,
+            msg_type = %msg_type,
+            "MESSAGE_SEND_START: Sending message to peer"
+        );
+
         self.log_register
             .register_events(NetEventLog::from_outbound_msg(&msg, &self.op_manager.ring))
             .await;
         self.op_manager.sending_transaction(target, &msg);
-        self.ev_listener_tx
+
+        let send_result = self
+            .ev_listener_tx
             .send(Left((target.clone(), Box::new(msg))))
-            .await
-            .map_err(|_| ConnectionError::SendNotCompleted(target.clone()))?;
-        Ok(())
+            .await;
+
+        let elapsed = send_start.elapsed();
+
+        match send_result {
+            Ok(_) => {
+                tracing::debug!(
+                    target = %target,
+                    msg_type = %msg_type,
+                    elapsed_ms = elapsed.as_millis(),
+                    "MESSAGE_SEND_SUCCESS: Message sent successfully"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    target = %target,
+                    msg_type = %msg_type,
+                    elapsed_ms = elapsed.as_millis(),
+                    error = %e,
+                    "MESSAGE_SEND_FAILED: Failed to send message"
+                );
+                Err(ConnectionError::SendNotCompleted(target.clone()))
+            }
+        }
     }
 }
 
@@ -401,6 +446,168 @@ impl P2pConnManager {
                                     );
                                 })??;
                             }
+                            NodeEvent::QueryNodeDiagnostics { config, callback } => {
+                                use freenet_stdlib::client_api::{
+                                    ContractState, NetworkInfo, NodeDiagnosticsResponse, NodeInfo,
+                                    SystemMetrics,
+                                };
+                                use std::collections::HashMap;
+
+                                let mut response = NodeDiagnosticsResponse {
+                                    node_info: None,
+                                    network_info: None,
+                                    subscriptions: Vec::new(),
+                                    contract_states: HashMap::new(),
+                                    system_metrics: None,
+                                    connected_peers_detailed: Vec::new(),
+                                };
+
+                                // Collect node information
+                                if config.include_node_info {
+                                    // Calculate location and adress if is set
+                                    let (addr, location) = if let Some(peer_id) =
+                                        op_manager.ring.connection_manager.get_peer_key()
+                                    {
+                                        let location = Location::from_address(&peer_id.addr);
+                                        (Some(peer_id.addr), Some(location))
+                                    } else {
+                                        (None, None)
+                                    };
+
+                                    // Always include basic node info, but only include address/location if available
+                                    response.node_info = Some(NodeInfo {
+                                        peer_id: self.key_pair.public().to_string(),
+                                        is_gateway: self.is_gateway,
+                                        location: location.map(|loc| format!("{:.6}", loc.0)),
+                                        listening_address: addr
+                                            .map(|peer_addr| peer_addr.to_string()),
+                                        uptime_seconds: 0, // TODO: implement actual uptime tracking
+                                    });
+                                }
+
+                                // Collect network information
+                                if config.include_network_info {
+                                    let connected_peers: Vec<_> = self
+                                        .connections
+                                        .keys()
+                                        .map(|p| (p.to_string(), p.addr.to_string()))
+                                        .collect();
+
+                                    response.network_info = Some(NetworkInfo {
+                                        connected_peers,
+                                        active_connections: self.connections.len(),
+                                    });
+                                }
+
+                                // Collect subscription information
+                                if config.include_subscriptions {
+                                    // Get network subscriptions from OpManager
+                                    let _network_subs = op_manager.get_network_subscriptions();
+
+                                    // Get application subscriptions from contract executor
+                                    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+                                    if op_manager
+                                        .notify_contract_handler(
+                                            ContractHandlerEvent::QuerySubscriptions {
+                                                callback: tx,
+                                            },
+                                        )
+                                        .await
+                                        .is_ok()
+                                    {
+                                        let app_subscriptions = match timeout(
+                                            Duration::from_secs(1),
+                                            rx.recv(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(QueryResult::NetworkDebug(info))) => {
+                                                info.application_subscriptions
+                                            }
+                                            _ => Vec::new(),
+                                        };
+
+                                        response.subscriptions = app_subscriptions
+                                            .into_iter()
+                                            .map(|sub| {
+                                                freenet_stdlib::client_api::SubscriptionInfo {
+                                                    contract_key: sub.contract_key,
+                                                    client_id: sub.client_id.into(),
+                                                }
+                                            })
+                                            .collect();
+                                    }
+                                }
+
+                                // Collect contract states for specified contracts
+                                if !config.contract_keys.is_empty() {
+                                    for contract_key in &config.contract_keys {
+                                        // Get actual subscriber information from OpManager
+                                        let subscribers_info =
+                                            op_manager.ring.subscribers_of(contract_key);
+                                        let subscriber_count = subscribers_info
+                                            .as_ref()
+                                            .map(|s| s.value().len())
+                                            .unwrap_or(0);
+                                        let subscriber_peer_ids: Vec<String> =
+                                            if config.include_subscriber_peer_ids {
+                                                subscribers_info
+                                                    .as_ref()
+                                                    .map(|s| {
+                                                        s.value()
+                                                            .iter()
+                                                            .map(|pk| pk.peer.to_string())
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default()
+                                            } else {
+                                                Vec::new()
+                                            };
+
+                                        response.contract_states.insert(
+                                            *contract_key,
+                                            ContractState {
+                                                subscribers: subscriber_count as u32,
+                                                subscriber_peer_ids,
+                                            },
+                                        );
+                                    }
+                                }
+
+                                // Collect system metrics
+                                if config.include_system_metrics {
+                                    let seeding_contracts =
+                                        op_manager.ring.all_network_subscriptions().len() as u32;
+                                    response.system_metrics = Some(SystemMetrics {
+                                        active_connections: self.connections.len() as u32,
+                                        seeding_contracts,
+                                    });
+                                }
+
+                                // Collect detailed peer information if requested
+                                if config.include_detailed_peer_info {
+                                    use freenet_stdlib::client_api::ConnectedPeerInfo;
+                                    // Populate detailed peer information from actual connections
+                                    for peer in self.connections.keys() {
+                                        response.connected_peers_detailed.push(ConnectedPeerInfo {
+                                            peer_id: peer.to_string(),
+                                            address: peer.addr.to_string(),
+                                        });
+                                    }
+                                }
+
+                                timeout(
+                                    Duration::from_secs(2),
+                                    callback.send(QueryResult::NodeDiagnostics(response)),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::error!(
+                                        "Failed to send node diagnostics query result: {:?}",
+                                        error
+                                    );
+                                })??;
+                            }
                             NodeEvent::TransactionTimedOut(tx) => {
                                 let Some(clients) = state.tx_to_client.remove(&tx) else {
                                     continue;
@@ -459,7 +666,7 @@ impl P2pConnManager {
                     }
                     Err(HandshakeError::ChannelClosed) => Ok(EventResult::Event(ConnEvent::ClosedChannel.into())),
                     Err(e) => {
-                        tracing::warn!("Handshake error: {:?}", e);
+                        tracing::warn!("HANDSHAKE_ERROR: Handshake failed with error: {:?}", e);
                         Ok(EventResult::Continue)
                     }
                 }
