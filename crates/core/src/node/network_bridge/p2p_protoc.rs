@@ -1,6 +1,6 @@
 use super::{ConnectionError, EventLoopNotificationsReceiver, NetworkBridge};
 use crate::contract::{ContractHandlerEvent, WaitingTransaction};
-use crate::message::{NetMessageV1, QueryResult};
+use crate::message::{NetMessageV1, QueryResult, TransactionType};
 use crate::node::subscribe::SubscribeMsg;
 use crate::ring::Location;
 use dashmap::DashSet;
@@ -565,10 +565,10 @@ impl P2pConnManager {
                             }
                             NodeEvent::TransactionTimedOut(tx) => {
                                 // Add logging for UPDATE transaction timeouts
-                                if tx.transaction_type().to_string().contains("Update") {
-                                    tracing::warn!(
+                                if matches!(tx.transaction_type(), TransactionType::Update) {
+                                    tracing::debug!(
                                         %tx,
-                                        "[UPDATE_RACE_DEBUG] UPDATE transaction timed out"
+                                        "UPDATE transaction timed out"
                                     );
                                 }
 
@@ -577,12 +577,12 @@ impl P2pConnManager {
                                 };
 
                                 if !clients.is_empty()
-                                    && tx.transaction_type().to_string().contains("Update")
+                                    && matches!(tx.transaction_type(), TransactionType::Update)
                                 {
                                     tracing::error!(
                                         %tx,
                                         client_count = %clients.len(),
-                                        "[UPDATE_RACE_DEBUG] Notifying {} clients of UPDATE timeout",
+                                        "Notifying {} clients of UPDATE timeout",
                                         clients.len()
                                     );
                                 }
@@ -703,7 +703,7 @@ impl P2pConnManager {
             .remove(msg.id())
             .then(|| executor_listener.callback());
         // For UPDATE operations, add extra logging and ensure proper state management
-        let is_update_op = msg.id().transaction_type().to_string().contains("Update");
+        let is_update_op = matches!(msg.id().transaction_type(), TransactionType::Update);
 
         let pending_client_req = if is_update_op {
             // For UPDATE operations, remove clients from tracking to prevent stale state
@@ -1128,10 +1128,10 @@ impl P2pConnManager {
             WaitingTransaction::Transaction(tx) => {
                 // Enhanced logging to debug race condition
                 let tx_type = tx.transaction_type();
-                if tx_type.to_string().contains("Update") {
-                    tracing::info!(
+                if matches!(tx_type, TransactionType::Update) {
+                    tracing::debug!(
                         %tx, %client_id, ?tx_type,
-                        "[UPDATE_RACE_DEBUG] Subscribing UPDATE client to transaction results"
+                        "Subscribing UPDATE client to transaction results"
                     );
                 } else {
                     tracing::debug!(%tx, %client_id, "Subscribing client to transaction results");
@@ -1141,10 +1141,10 @@ impl P2pConnManager {
                 let had_existing = state.tx_to_client.contains_key(&tx);
                 state.tx_to_client.entry(tx).or_default().insert(client_id);
 
-                if tx_type.to_string().contains("Update") && had_existing {
-                    tracing::warn!(
+                if matches!(tx_type, TransactionType::Update) && had_existing {
+                    tracing::debug!(
                         %tx, %client_id,
-                        "[UPDATE_RACE_DEBUG] UPDATE transaction already had clients - possible race condition"
+                        "UPDATE transaction already had clients - possible race condition"
                     );
                 }
             }

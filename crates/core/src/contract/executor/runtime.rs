@@ -1048,9 +1048,15 @@ impl Executor<Runtime> {
         params: &Parameters<'_>,
         new_state: &WrappedState,
     ) -> Result<(), ExecutorError> {
-        tracing::debug!(contract = %key, "notify of contract update");
+        tracing::info!(contract = %key, "send_update_notification called");
         let key = *key;
         if let Some(notifiers) = self.update_notifications.get_mut(&key) {
+            tracing::info!(
+                contract = %key,
+                num_subscribers = notifiers.len(),
+                "Found {} subscribers for contract",
+                notifiers.len()
+            );
             let summaries = self.subscriber_summaries.get_mut(&key).unwrap();
             // in general there should be less than 32 failures
             let mut failures = Vec::with_capacity(32);
@@ -1068,20 +1074,31 @@ impl Executor<Runtime> {
                         .into(),
                     None => UpdateData::State(State::from(new_state.as_ref()).into_owned()),
                 };
-                if let Err(err) =
-                    notifier.send(Ok(
-                        ContractResponse::UpdateNotification { key, update }.into()
-                    ))
+                if let Err(err) = notifier.send(Ok(ContractResponse::UpdateNotification {
+                    key,
+                    update: update.clone(),
+                }
+                .into()))
                 {
                     failures.push(*peer_key);
-                    tracing::error!(cli_id = %peer_key, "{err}");
+                    tracing::error!(cli_id = %peer_key, "Failed to send UpdateNotification: {err}");
                 } else {
-                    tracing::debug!(cli_id = %peer_key, contract = %key, "notified of update");
+                    tracing::info!(
+                        cli_id = %peer_key,
+                        contract = %key,
+                        update_type = ?update,
+                        "Successfully sent UpdateNotification to subscriber"
+                    );
                 }
             }
             if !failures.is_empty() {
                 notifiers.retain(|(c, _)| !failures.contains(c));
             }
+        } else {
+            tracing::warn!(
+                contract = %key,
+                "No subscribers found for contract update notification"
+            );
         }
         Ok(())
     }

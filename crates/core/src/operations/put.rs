@@ -838,12 +838,19 @@ pub enum PutState {
 
 /// Request to insert/update a value into a contract.
 pub(crate) async fn request_put(op_manager: &OpManager, mut put_op: PutOp) -> Result<(), OpError> {
+    tracing::info!("PUT_DEBUG: Starting request_put, tx: {}", put_op.id);
+
     let (key, ..) = if let Some(PutState::PrepareRequest { contract, .. }) = &put_op.state {
         (contract.key(), contract.clone())
     } else {
+        tracing::error!(
+            "PUT_DEBUG: Unexpected state in request_put, tx: {}",
+            put_op.id
+        );
         return Err(OpError::UnexpectedOpState);
     };
 
+    tracing::info!("PUT_DEBUG: Contract key: {}, tx: {}", key, put_op.id);
     let sender = op_manager.ring.connection_manager.own_location();
 
     // Check if we have any other peers that can cache contracts
