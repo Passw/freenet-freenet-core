@@ -16,7 +16,7 @@ use super::{put, OpEnum, OpError, OpInitialization, OpOutcome, Operation, Operat
 use crate::node::IsOperationCompleted;
 use crate::{
     client_events::HostResult,
-    contract::{ContractHandlerEvent, StoreResponse},
+    contract::ContractHandlerEvent,
     message::{InnerMessage, NetMessage, NetMessageV1, Transaction},
     node::{NetworkBridge, OpManager, PeerId},
     ring::{Location, PeerKeyLocation},
@@ -814,6 +814,7 @@ pub(crate) fn start_op(
 pub enum PutState {
     ReceivedRequest,
     /// Preparing request for put op.
+    #[allow(dead_code)]
     PrepareRequest {
         contract: ContractContainer,
         related_contracts: RelatedContracts<'static>,
@@ -838,109 +839,10 @@ pub enum PutState {
 }
 
 /// Request to insert/update a value into a contract.
-pub(crate) async fn request_put(op_manager: &OpManager, mut put_op: PutOp) -> Result<(), OpError> {
-    let (contract, value, related_contracts, _htl, _subscribe) = match &put_op.state {
-        Some(PutState::PrepareRequest {
-            contract,
-            value,
-            related_contracts,
-            htl,
-            subscribe,
-        }) => (
-            contract.clone(),
-            value.clone(),
-            related_contracts.clone(),
-            *htl,
-            *subscribe,
-        ),
-        _ => return Err(OpError::UnexpectedOpState),
-    };
-
-    let key = contract.key();
-    let sender = op_manager.ring.connection_manager.own_location();
-
-    // ALWAYS cache locally first when doing a PUT
-    // This is the correct behavior - if we're putting, we want the contract locally
-    tracing::debug!("PUT: Caching contract {} locally first", key);
-
-    // Check if contract already exists locally
-    let get_result = op_manager
-        .notify_contract_handler(ContractHandlerEvent::GetQuery {
-            key,
-            return_contract_code: false,
-        })
-        .await;
-
-    let contract_exists = matches!(
-        get_result,
-        Ok(ContractHandlerEvent::GetResponse {
-            response: Ok(StoreResponse { state: Some(_), .. }),
-            ..
-        })
-    );
-
-    if contract_exists {
-        // Contract already exists, update it
-        tracing::debug!("Contract {} already exists locally, updating", key);
-        match op_manager
-            .notify_contract_handler(ContractHandlerEvent::UpdateQuery {
-                key,
-                data: UpdateData::State(value.clone().into()),
-                related_contracts: related_contracts.clone(),
-            })
-            .await
-        {
-            Ok(ContractHandlerEvent::UpdateResponse {
-                new_value: Ok(_), ..
-            }) => {
-                tracing::debug!("Successfully updated existing contract {}", key);
-            }
-            Ok(ContractHandlerEvent::UpdateResponse {
-                new_value: Err(err),
-                ..
-            }) => {
-                tracing::error!("Failed to update existing contract {}: {}", key, err);
-                return Err(OpError::from(err));
-            }
-            Ok(ContractHandlerEvent::UpdateNoChange { .. }) => {
-                tracing::debug!("No change needed for contract {}", key);
-            }
-            Err(err) => return Err(err.into()),
-            Ok(_) => return Err(OpError::UnexpectedOpState),
-        }
-    } else {
-        // New contract, use PutQuery which will handle it properly
-        tracing::debug!("Contract {} is new, storing locally", key);
-        put_contract(
-            op_manager,
-            key,
-            value.clone(),
-            related_contracts.clone(),
-            &contract,
-        )
-        .await?;
-    }
-
-    // After caching locally, forward to optimal peers for redundancy
-    // Find the best peer to forward to (excluding ourselves)
-    let target = op_manager
-        .ring
-        .closest_potentially_caching(&key, [&sender.peer].as_slice());
-
-    // Mark operation as successful since we've cached locally
-    // Per Nacho's guidance: "If you are doing a PUT, shouldn't we always be caching that locally"
-    put_op.state = Some(PutState::Finished { key });
-
-    // TODO: Consider forwarding to optimal peers for redundancy
-    // For now, we just cache locally and return success
-    if target.is_some() {
-        tracing::debug!(
-            "PUT: Successfully cached locally, additional peers available for potential redundancy"
-        );
-    } else {
-        tracing::debug!("PUT: Successfully cached locally, no other peers available");
-    }
-
+pub(crate) async fn request_put(op_manager: &OpManager, put_op: PutOp) -> Result<(), OpError> {
+    // Simply push the operation to be processed normally
+    // The local caching should happen in the RequestPut message handler
+    op_manager.push(put_op.id, OpEnum::Put(put_op)).await?;
     Ok(())
 }
 
